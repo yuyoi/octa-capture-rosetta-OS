@@ -232,8 +232,10 @@ lab_recover:                            /* RTX lands here after a fault inside f
         R1 = [P1 + 4];
         FP = R1;
         R0 = 0;
+        CLI R2;                         /* anomaly 05000312: no interrupt while loading loop registers */
         LC0 = R0;                       /* kill any hardware loop fn was in */
         LC1 = R0;
+        STI R2;
         L0 = 0; L1 = 0; L2 = 0; L3 = 0;
         R0 = 1;
         JUMP 2b;

@@ -6,7 +6,7 @@ N=$1
 OBJS="$N.o"
 for c in *.c; do
   [ -f "$c" ] || continue
-  $B-gcc -O2 -mcpu=bf527 -ffreestanding -fno-builtin -nostdlib -fno-common -Wall -c "$c" -o "${c%.c}.o"
+  $B-gcc -O2 -mcpu=bf527-any -mcsync-anomaly -mspecld-anomaly -fno-branch-count-reg -ffreestanding -fno-builtin -nostdlib -fno-common -Wall -c "$c" -o "${c%.c}.o"
   OBJS="$OBJS ${c%.c}.o"
 done
 $B-as -o $N.o ${N}_pp.S
