@@ -1,0 +1,209 @@
+/* Rosetta OCTA-CAPTURE lab1: CPU meter + Rosetta Lab SysEx backend (docs/LAB.md).
+ *
+ * .ra  0x30de0e (136 B, dead overlay body)  wrap48 (meter, optional chopper), arm_stub
+ * .rb  0x30de98 (292 B, dead overlay body)  ui_hook (meter on the LCD), midi_hook (ARMED gate stub)
+ * .lab LAB_BASE (appended after the init table; the loader unpacks it with the rest of main)
+ *
+ * Reachability (brick rule: nothing new may run before the key scan at 0x31bbf6):
+ *   arm_stub  <- CALL at 0x31bd7a, mode-0 path only, after the scan. It sets ARMED.
+ *   ui_hook   <- CALL at 0x359a16, UI tick (post-scan), gated on ARMED.
+ *   midi_hook <- CALL at 0x36949a in the USB-MIDI dispatcher (may run before the scan!). Until ARMED it
+ *                does exactly the two replaced instructions and returns; only then does it reach .lab.
+ *   wrap48    <- installed into [0xff8010b4] by ui_hook (post-scan).
+ * ARMED lives in .data (0x41d5e4, rebuilt by the init table at every boot), so it is never set before arm_stub.
+ */
+        .set VARS,       0x41d5e4      /* +0 ARMED, +4 LAST, +8 PER, +0xc BMAX, +0x10 FRAMES, +0x14 FLAGS */
+        .set MAGIC,      0x52535441
+        .set STOCK48,    0xffa08054
+        .set CBPTR,      0xff8010b4
+        .set GFX,        0x440944
+        .set FMT,        0x43c160      /* stock "%2d/%2d" */
+        .set f_orig_arm, 0x30dfdc
+        .set f_overlay,  0x30ddc8
+        .set f_sprintf,  0x324010
+        .set f_gsave,    0x34df50
+        .set f_grest,    0x34df02
+        .set f_font,     0x34dfdc
+        .set f_color,    0x34dee2
+        .set f_erase,    0x34e6aa
+        .set f_text,     0x34edd8
+        .set BX0, 40
+        .set BY0, 52
+        .set BX1, 127
+        .set BY1, 63
+        /* C-side config: patches/lab_cfg.h */
+
+/* ===================================================================== .ra */
+        .section .ra, "ax"
+        .global wrap48, arm_stub
+wrap48:                                 /* R0=in R1=out R2=usbplay, arg4 rec at caller [SP+0xc] */
+        LINK 0;
+        [--SP] = (R7:7, P5:3);
+        SP += -16;
+        P3 = [FP + 0x14];
+        P5.L = VARS & 0xffff;  P5.H = VARS >> 16;
+        R7 = CYCLES;
+        R3 = [P5 + 4];
+        [P5 + 4] = R7;
+        R3 = R7 - R3;
+        [P5 + 8] = R3;
+        [SP + 0xc] = P3;
+        P0.L = STOCK48 & 0xffff;  P0.H = STOCK48 >> 16;
+        CALL (P0);
+        R0 = [P5 + 0x10];
+        R0 += 1;
+        [P5 + 0x10] = R0;
+        R1 = [P5 + 0x14];               /* FLAGS bit0: record-ch1 chopper (off by default, lab: chop on) */
+        CC = BITTST (R1, 0);
+        IF !CC JUMP 1f;
+        CC = BITTST (R0, 15);
+        IF !CC JUMP 1f;
+        R0 = 0;
+        [P3] = R0;
+1:      R0 = CYCLES;
+        R0 = R0 - R7;
+        R1 = [P5 + 0xc];
+        R0 = MAX (R0, R1);
+        [P5 + 0xc] = R0;
+        SP += 16;
+        (R7:7, P5:3) = [SP++];
+        UNLINK;
+        RTS;
+
+arm_stub:                               /* from 0x31bd7a, R0 = 2 must survive */
+        R1 = SYSCFG;
+        BITSET (R1, 1);
+        SYSCFG = R1;
+        CSYNC;
+        P1.L = VARS & 0xffff;  P1.H = VARS >> 16;
+        R1 = 0;
+        [P1 + 4] = R1;
+        [P1 + 8] = R1;
+        [P1 + 0xc] = R1;
+        [P1 + 0x10] = R1;
+        [P1 + 0x14] = R1;
+        R1.L = MAGIC;  R1.H = MAGIC;
+        [P1] = R1;
+        JUMP.L f_orig_arm;
+
+/* ===================================================================== .rb */
+        .section .rb, "ax"
+        .global ui_hook, midi_hook
+ui_hook:
+        LINK 0x28;
+        [--SP] = (R7:6, P5:5);
+        SP += -16;
+        CALL f_overlay;
+        P5.L = VARS & 0xffff;  P5.H = VARS >> 16;
+        R0 = [P5];
+        R1.L = MAGIC;  R1.H = MAGIC;
+        CC = R0 == R1;
+        IF !CC JUMP 9f;
+        CLI R2;
+        P1.L = CBPTR & 0xffff;  P1.H = CBPTR >> 16;
+        R0 = [P1];
+        R1.L = STOCK48 & 0xffff;  R1.H = STOCK48 >> 16;
+        CC = R0 == R1;
+        IF !CC JUMP 2f;
+        R1.L = wrap48;  R1.H = wrap48;
+        [P1] = R1;
+2:      R6 = [P5 + 0xc];
+        R7 = [P5 + 8];
+        R0 = 0;
+        [P5 + 0xc] = R0;
+        STI R2;
+        R0 = FP;
+        R0 += -0x20;
+        R1.L = FMT & 0xffff;  R1.H = FMT >> 16;
+        R2 = R6;
+        [SP + 0xc] = R7;
+        CALL f_sprintf;
+        P5.L = GFX & 0xffff;  P5.H = GFX >> 16;
+        R0 = [P5];
+        CALL f_gsave;
+        R0 = [P5];
+        R1 = 0;
+        CALL f_font;
+        R7.L = 0;  R7.H = 0x0100;
+        R6.L = 2;  R6.H = 0x0100;
+        R0 = [P5];
+        R1 = R7;
+        R2 = R6;
+        CALL f_color;
+        R0 = BX0;  W[FP + -0x28] = R0;
+        R0 = BY0;  W[FP + -0x26] = R0;
+        R0 = BX1;  W[FP + -0x24] = R0;
+        R0 = BY1;  W[FP + -0x22] = R0;
+        R0 = [P5];
+        R1 = FP;
+        R1 += -0x28;
+        CALL f_erase;
+        R0 = [P5];
+        R1 = R7;
+        R2 = R6;
+        CALL f_color;
+        R0 = FP;
+        R0 += -0x20;
+        [SP + 0xc] = R0;
+        R0 = [P5];
+        R1 = BX0 + 1;
+        R2 = BY0 + 2;
+        CALL f_text;
+        R0 = [P5];
+        CALL f_grest;
+9:      SP += 16;
+        (R7:6, P5:5) = [SP++];
+        UNLINK;
+        RTS;
+
+/* Replaces `R1 = [SP + 0x3c]; R0 = 0xf (X);` at 0x36949a in the USB-MIDI dispatcher 0x369468.
+ * Live there: everything except R0/R1 (both rewritten by the replaced instructions). [SP+0x3c] = packet. */
+midi_hook:
+        [--SP] = ASTAT;
+        [--SP] = P0;
+        P0.L = VARS & 0xffff;  P0.H = VARS >> 16;
+        R0 = [P0];
+        R1.L = MAGIC;  R1.H = MAGIC;
+        CC = R0 == R1;
+        P0 = [SP++];
+        IF CC JUMP 1f;
+        ASTAT = [SP++];                 /* not armed: exactly the two replaced instructions */
+        R1 = [SP + 0x3c];
+        R0 = 0xf (X);
+        RTS;
+1:      ASTAT = [SP++];
+        JUMP.L lab_entry;               /* SP, RETS and every other register still the dispatcher's */
+
+/* ===================================================================== .lab (appended code) */
+        .section .lab, "ax"
+        .global lab_entry
+/* Reached from midi_hook only when ARMED (task 9, stack 0x400 with ~0x290 usable here: keep frames small).
+ * The dispatcher needs R4, P3, P4, FP, SP and its stack slots [SP+0x34..0x3c] kept; R0-R3, R5-R7, P0-P2, P5,
+ * CC are free (re-derived before use). Not ours: return with R1 = [SP+0x3c], R0 = 0xf. Ours: go to 0x369566. */
+lab_entry:
+        R0 = [SP + 0x3c];               /* packet, read before SP moves */
+        [--SP] = RETS;
+        SP += -12;
+        CALL _lab_rx;                   /* GCC keeps R4-R7, P3-P5, FP; L0-L3 stay 0 */
+        SP += 12;
+        RETS = [SP++];
+        CC = R0 == 0;
+        R1 = [SP + 0x3c];
+        IF CC JUMP 1f;
+        P0.L = 0x9566;  P0.H = 0x36;    /* lab packet: skip Roland's listener loop (next packet), */
+        R0 = 0xf (X);                   /* 0x369566 needs only R4, P4 and SP (all intact) */
+        JUMP (P0);
+1:      R0 = 0xf (X);                   /* not ours: exactly the two replaced instructions */
+        RTS;
+
+/* ---- hooks into stock code (each replaces exactly the stock bytes tools/build_dsp.py checks) ---- */
+        .section .h_arm, "ax"           /* 0x31bd7a: was CALL 0x30dfdc */
+        CALL arm_stub;
+        .section .h_ui, "ax"            /* 0x359a16: was CALL 0x30ddc8 */
+        CALL ui_hook;
+        .section .h_gb, "ax"            /* 0x30de0c: gate-B target -> plain exit */
+        .byte 0xfa, 0x2f                /* JUMP.S 0x30de00 */
+        .section .h_ga, "ax"            /* 0x30de96: gate-A target -> back to the gate-B test */
+        .byte 0xb2, 0x2f                /* JUMP.S 0x30ddfa */
+        .section .h_midi, "ax"          /* 0x36949a: was R1 = [SP + 0x3c]; R0 = 0xf (X); */
+        CALL midi_hook;

@@ -31,7 +31,8 @@ PATCHES = {  # name: (file offset, stock bytes, new bytes)
 }
 
 
-def parse(d):
+def parse(d, end=None):
+    """end: file offset where the table must end (default EOF; pass it when code is appended after the table)"""
     assert struct.unpack_from('<I', d, TABLE_PTR)[0] == 0x36e670
     p = 0x6e570
     cnt = struct.unpack_from('<I', d, p + 4)[0]
@@ -46,7 +47,8 @@ def parse(d):
         n = 0 if k == 1 else (size if k == 0 else pl)
         recs.append((h, dst, size, fl, pl, k, d[p:p + n]))
         p += (n + 3) & ~3
-    assert p == len(d), f'table does not end at EOF: {p:#x} vs {len(d):#x}'
+    want = len(d) if end is None else end
+    assert p == want, f'table does not end where expected: {p:#x} vs {want:#x}'
     return recs
 
 

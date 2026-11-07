@@ -1,6 +1,7 @@
-"""Assemble a patch .S on newpc (bfin-elf binutils at ~/bfin/tools/bin).
+"""Build a patch on newpc (bfin-elf binutils + gcc at ~/bfin/tools/bin).
 
-usage: python -I asm.py NAME   (NAME.S + NAME.ld here) -> NAME_<section>.bin, NAME.sec (section vma size), NAME.lst
+usage: python -I asm.py NAME [file.c ...]  (NAME.S + NAME.ld here) -> NAME_<section>.bin, NAME.sec, NAME.lst, NAME.map
+C files listed after NAME (plus every *.h / *.inc here) are compiled and linked in.
 Folds `SYM & 0xffff` / `SYM >> 16` of .set constants into numbers first (gas makes unsupported relocs otherwise).
 For a full 32-bit constant use `R1.L = SYM; R1.H = SYM;` (gas takes the low/high half itself).
 """
@@ -25,12 +26,17 @@ open(name + '_pp.S', 'w', encoding='utf8').write(re.sub(r'\b(\w+)\s*(&|>>)\s*(?:
 SSH = r'C:\Windows\System32\OpenSSH\ssh.exe'
 SCP = r'C:\Windows\System32\OpenSSH\scp.exe'
 H = 'wizard@newpc.local'
-subprocess.run([SSH, H, 'mkdir -p /tmp/octa_p'], check=True)
-subprocess.run([SCP, '-q', name + '_pp.S', name + '.ld', 'remote_asm.sh', H + ':/tmp/octa_p/'], check=True)
-r = subprocess.run([SSH, H, f'cd /tmp/octa_p && sh remote_asm.sh {name}'], capture_output=True, text=True)
+import glob
+cfiles = sys.argv[2:]
+extra = [f for f in glob.glob('*.h') + glob.glob('*.inc')]
+subprocess.run([SSH, H, 'rm -rf /tmp/octa_p && mkdir -p /tmp/octa_p'], check=True)
+subprocess.run([SCP, '-q', name + '_pp.S', name + '.ld', 'remote_build.sh'] + cfiles + extra + [H + ':/tmp/octa_p/'], check=True)
+r = subprocess.run([SSH, H, f'cd /tmp/octa_p && sh remote_build.sh {name}'], capture_output=True, text=True)
 if r.returncode:
     sys.exit(r.stdout + r.stderr)
-for f in (name + '.sec', name + '.lst', name + '.nm'):
+if r.stderr.strip():
+    print(r.stderr.strip())
+for f in (name + '.sec', name + '.lst', name + '.nm', name + '.map'):
     subprocess.run([SCP, '-q', f'{H}:/tmp/octa_p/{f}', f], check=True)
 for line in open(name + '.sec'):
     sec, vma, size = line.split()

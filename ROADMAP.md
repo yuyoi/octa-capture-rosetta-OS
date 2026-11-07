@@ -5,6 +5,7 @@
 - [x] Boot splash: the Rosetta peek (v4). **Works on hardware** (2026-11-07, second unit)
 
 ## Next
+0. **Lab backend (lab1):** peek/poke/run code over CTRL USB-MIDI (docs/LAB.md). Built and host-tested; flash with test/lab1. Then memprobe/memcheck to prove the SDRAM size and the free areas.
 1. **CPU-load meter.** Find the audio interrupt (the SPORT DMA handler) and time it, then show the load % on the LCD. This sets the budget for everything below.
 2. **Find the insert point.** Locate the stock per-channel compressor in the Blackfin's audio loop. The user confirmed the comp IS recorded (it runs before the USB send), so the strip goes right next to it.
 3. **First DSP test: a high-pass filter on one channel.** Smallest possible audio change; prove we can touch the signal safely.

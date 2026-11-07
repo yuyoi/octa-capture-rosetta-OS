@@ -7,7 +7,8 @@ How it was checked:
 
 ## TL;DR
 - **SDRAM: the controller is set for 16 MB** (CONFIRMED setting). The program uses about **1.3 MB** of it: code 0x300100-0x36e66b, data and bss 0x400000-~0x450000.
-- **About 11.7 MB above the data (0x450000-0xFFFFFF) and 3 MB below the code have no code pointing at them.** No heap, no buffer table, no pointer into them (INFERRED free). That's room for about 60 channel-seconds of delay at 48 kHz (32-bit samples).
+- **CORRECTION (CPLB/heap review): 0x44DE6C-0x4FFFFF is VisualDSP heap 0** (heap table 0x43667c = {0x44de6c, 0xb2194, 0}, init 0x325270, malloc in L1 0xffa001c8). The earlier "no heap" was wrong.
+- **Free: 0x500000-0xFFFFFF (11 MB) and 0x000000-0x2FFFFF (3 MB)** (INFERRED free, no pointers). That's room for about 55 channel-seconds of delay at 48 kHz (32-bit samples). The dead init table 0x3A2D9C-0x3FFFFF is also free after boot; Rosetta's lab code is appended there, and uploads go to 0x3B0000.
 - **L1 (fast on-chip RAM):** ~20 KB of instruction RAM and ~2.9 KB of data RAM are free (INFERRED free, see the table). That's enough for a channel-strip EQ in fast memory.
 - **The physical chip size is not proven.** The controller says 16 MB, but a smaller chip would alias. A board photo of the SDRAM chip, or one alias test on hardware, settles it.
 
@@ -24,8 +25,8 @@ How it was checked:
 | 0x300100-0x36E66B | main .text (450 KB) | used |
 | 0x36E66C-0x3FFFFF | nothing (the init table stays in flash/file only) | INFERRED free |
 | 0x400000-0x44DE6B | .data/.rodata/zeroed .bss from the init table | used |
-| 0x44DE6C-~0x450000 | more .bss (refs up to 0x44ffcd) | used |
-| 0x450000-0xFFFFFF | nothing found: about 11.7 MB | INFERRED free |
+| 0x44DE6C-0x4FFFFF | VisualDSP heap 0 (malloc) | used (CONFIRMED) |
+| 0x500000-0xFFFFFF | nothing found: 11 MB | INFERRED free |
 
 Things that looked like pointers and weren't:
 - 0x800000 / 0x400000 in the crt area are 128x64 clipping constants.
@@ -51,7 +52,13 @@ Things that looked like pointers and weren't:
 
 ## What it means for the roadmap
 - **EQ/comp channel strip:** code goes in the free L1 code (14 KB plus 6 KB), and coefficients and state in the free L1 data (2.9 KB). 8 channels × 5 biquads × ~32 B of state and coefficients ≈ 1.3 KB, which fits. Loading code into L1 needs a post-scan copy (MDMA/ITEST); core stores can't write L1 instruction RAM.
-- **Delays / looper-style buffers:** SDRAM 0x450000+ (11.7 MB if the chip really is 16 MB). At 48 kHz with 32-bit samples that's 192 KB per channel-second, so about 60 channel-seconds. At 96 kHz it's about 30.
+- **Delays / looper-style buffers:** SDRAM 0x500000+ (11 MB if the chip really is 16 MB). At 48 kHz with 32-bit samples that's 192 KB per channel-second, so about 55 channel-seconds. At 96 kHz it's about 27.
 - **Before using any of it:** run one hardware probe build:
   - **Alias test:** write different markers at 0x700000 and 0xF00000. If they collide, the chip is 8 MB.
   - **Canaries:** fill the free L1 data and a few SDRAM pages with a pattern at arm time, then show the number of changed words on the meter line for a few minutes of normal use.
+
+## CPLBs and faults (from the CPLB review, CONFIRMED)
+- ICPLB: L1 code 1 MB; SDRAM 4 × 4 MB cacheable (all 16 MB executable); flash 4 × 1 MB.
+- DCPLB: L1 data A/B 1 MB each; SDRAM 4 × 4 MB write-through, supervisor write; flash.
+- No CPLB miss handler. EVT3 = `EMUEXCPT; RTX`, so any fault (uncovered address, a normal load from L1 code 0xFFA0xxxx, misaligned access) re-runs forever. The faulting task hangs; a power cycle recovers it.
+- Code stored at runtime: SSYNC, then IFLUSH each 32-byte line (not as the last instruction of a hardware loop), then SSYNC; CSYNC.

@@ -23,11 +23,17 @@ HOOKS = {                                # section: (address, stock bytes)
     'h_ui': (0x359a16, bytes.fromhex('fde3d9a1')),    # CALL 0x30ddc8  (50 ms UI tick)
     'h_gb': (0x30de0c, bytes.fromhex('28e4')),        # gate-B target
     'h_ga': (0x30de96, bytes.fromhex('2d82')),        # gate-A target
+    'h_midi': (0x36949a, bytes.fromhex('f1a37860')),  # R1 = [SP+0x3c]; R0 = 0xf  (USB-MIDI dispatcher)
 }
 
 
+APPEND_ALIGN = 0x100
+
+
 def apply(main, patch):
+    """returns (new main, allowed .text offsets, table end offset). Sections at/after the image end are appended."""
     m = bytearray(main)
+    table_end = len(main)
     lo, hi = OVERLAY[0] - BASE, OVERLAY[1] - BASE
     m[lo:hi] = bytes(hi - lo)                          # clear the dead overlay body (NOPs)
     allowed = set(range(lo, hi))
@@ -42,24 +48,30 @@ def apply(main, patch):
             assert vma == a and len(data) == len(stock), f'{sec}: wrong address/size'
             assert main[off:off + len(stock)] == stock, f'{sec}: stock bytes mismatch'
             allowed |= set(range(off, off + len(data)))
+            m[off:off + size] = data
+        elif off >= table_end:
+            assert off % APPEND_ALIGN == 0 and off - table_end < APPEND_ALIGN, f'{sec}: append address {vma:#x}'
+            assert vma + size <= 0x3F0000, f'{sec}: appended code runs into the upload area'
+            m += bytes(off - len(m)) + data
         else:
             assert OVERLAY[0] <= vma and vma + size <= OVERLAY[1], f'{sec} outside the dead overlay'
-        m[off:off + size] = data
-    return bytes(m), allowed
+            m[off:off + size] = data
+    return bytes(m), allowed, table_end
 
 
 def main(a):
     stock = open(a[0], 'rb').read()
     spl = bsm.build(stock, bsm.splash_bytes(a[1]))
-    new, allowed = apply(spl, a[2])
+    new, allowed, tend = apply(spl, a[2])
     allowed |= {o + j for n, (o, old, rep) in bsm.PATCHES.items() for j in range(len(old))}
     tdiff = [i for i in range(bsm.TEXT_END) if stock[i] != new[i]]
     assert set(tdiff) <= allowed, [hex(x + BASE) for x in tdiff if x not in allowed][:8]
-    m0, m1 = bsm.run(bsm.parse(stock)), bsm.run(bsm.parse(new))
+    m0, m1 = bsm.run(bsm.parse(stock)), bsm.run(bsm.parse(new, tend))
     diff = [x for x in set(m0) | set(m1) if m0.get(x) != m1.get(x)]
     assert all(bsm.BMP_ADDR <= x < bsm.BMP_ADDR + 0x400 for x in diff), 'runtime data changed outside the bitmap'
     open(a[3], 'wb').write(new)
-    print(f'{a[3]}: .text bytes changed {len(tdiff)} (all splash/hooks/overlay), runtime data diff only in the bitmap')
+    print(f'{a[3]}: .text bytes changed {len(tdiff)} (all splash/hooks/overlay), runtime data diff only in the bitmap'
+          + (f', {len(new) - tend} bytes appended at {tend + BASE:#x}' if len(new) > tend else ''))
 
 
 if __name__ == '__main__':

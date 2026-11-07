@@ -13,6 +13,10 @@
 !/patches/
 /patches/*
 !/patches/*.S
+!/patches/*.c
+!/patches/*.h
+!/patches/remote_build.sh
+!/patches/tests/
 !/patches/*.ld
 !/patches/asm.py
 !/patches/remote_asm.sh
@@ -29,3 +33,4 @@ __pycache__/
 *.bin
 *.dis
 *.zip
+tools/*_memprobe.json
