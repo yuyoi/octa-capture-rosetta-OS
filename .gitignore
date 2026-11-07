@@ -1,0 +1,24 @@
+# Whitelist: Roland's firmware, unpacked images, disassembly and test builds can never be added.
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/ROADMAP.md
+!/CHECKSUM_NOTES.md
+!/octa_fw.py
+!/tools/
+!/art/
+!/docs/
+!/re/
+/re/*
+!/re/*.md
+/art/*
+!/art/rosetta_splash_v*_128x64.png
+!/art/rosetta_splash_v*_preview.png
+!/art/rosetta_splash_candidates.png
+!/art/rosetta_splash_v3_v4_preview.png
+__pycache__/
+*.dat
+*.bin
+*.dis
+*.zip

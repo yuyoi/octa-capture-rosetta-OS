@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Roland OCTA-CAPTURE Mod: Rosetta OS custom firmware (UA-1010)</title>
+<meta name="description" content="Roland OCTA-CAPTURE (UA-1010) mod: free custom firmware for the Octa Capture audio interface. Rosetta boot screen works on hardware; per-channel EQ and comp channel strip in progress. Built from Roland's own v1.51 update.">
+<meta name="keywords" content="Roland OCTA-CAPTURE, Octa Capture, OctaCapture, UA-1010, OCTA-CAPTURE mod, OCTA-CAPTURE firmware, OCTA-CAPTURE custom firmware, OCTA-CAPTURE EQ, OCTA-CAPTURE update, UpdOcta.dat, Roland audio interface mod, Blackfin firmware">
+<link rel="canonical" href="https://yuyoi.github.io/octa-capture-rosetta-OS/">
+<link rel="icon" type="image/png" href="img/hexgirl_icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Rosetta OS">
+<meta property="og:title" content="Roland OCTA-CAPTURE Mod: Rosetta OS custom firmware">
+<meta property="og:description" content="Free custom firmware for the Roland OCTA-CAPTURE (UA-1010): a new boot screen that runs on real hardware, with a per-channel EQ and comp channel strip next.">
+<meta property="og:url" content="https://yuyoi.github.io/octa-capture-rosetta-OS/">
+<meta property="og:image" content="https://yuyoi.github.io/octa-capture-rosetta-OS/img/rosetta_splash_v4_preview.png">
+<meta property="og:image:width" content="512">
+<meta property="og:image:height" content="256">
+<meta property="og:image:alt" content="OCTA-CAPTURE LCD showing the Rosetta boot screen">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"OCTA-CAPTURE Rosetta OS","applicationCategory":"MultimediaApplication","operatingSystem":"Roland OCTA-CAPTURE UA-1010 (system v1.51)","description":"Custom firmware mod for the Roland OCTA-CAPTURE (UA-1010) USB audio interface: a new boot screen tested on hardware, update-file tools (unpack, pack, checksum), and a per-channel EQ and compressor channel strip in progress.","url":"https://yuyoi.github.io/octa-capture-rosetta-OS/","image":"https://yuyoi.github.io/octa-capture-rosetta-OS/img/rosetta_splash_v4_preview.png","sameAs":"https://github.com/yuyoi/octa-capture-rosetta-OS","downloadUrl":"https://github.com/yuyoi/octa-capture-rosetta-OS","author":{"@type":"Person","name":"JunkSmithWizard","url":"https://github.com/yuyoi"},"license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+</script>
+<style>
+:root{--bg:#f4f6f8;--paper:#fff;--fg:#15181c;--muted:#5a6068;--rule:#d3d8de;--bar:#1f3a5f;--bar-fg:#f4f6f8;--accent:#1f5fae;--btn-fg:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#101318;--paper:#181c22;--fg:#eceef1;--muted:#a0a7b0;--rule:#2b3138;--bar:#9fc0e8;--bar-fg:#101318;--accent:#7fb2ff;--btn-fg:#101318}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 "Helvetica Neue",Arial,sans-serif}
+.wrap{max-width:920px;margin:0 auto;padding:0 16px}
+header{padding:40px 0 24px;text-align:center}
+.badge{width:96px;height:96px;image-rendering:pixelated}
+.lcdimg{width:100%;max-width:640px;height:auto;image-rendering:pixelated;border-radius:6px;border:6px solid #2a2f36;margin-top:16px}
+h1{font-size:2rem;line-height:1.2;margin:16px 0 8px}
+.lede{color:var(--muted);font-size:1.1rem;margin:0 auto;max-width:660px}
+.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:24px 0 8px}
+.btn{display:inline-block;padding:12px 18px;border-radius:6px;background:var(--accent);color:var(--btn-fg);text-decoration:none;font-weight:700}
+.btn.alt{background:transparent;color:var(--fg);border:2px solid var(--fg)}
+h2{background:var(--bar);color:var(--bar-fg);font-size:1rem;letter-spacing:.08em;text-transform:uppercase;padding:8px 12px;margin:40px 0 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.card{background:var(--paper);border:1px solid var(--rule);border-radius:6px;padding:14px 16px}
+.card b{display:block;margin-bottom:4px}
+.card span{color:var(--muted);font-size:.95rem}
+.tag{display:inline-block;font-size:.8rem;font-weight:700;padding:1px 8px;border-radius:10px;margin-bottom:6px}
+.ok{background:#2e7d32;color:#fff}.next{background:#a86b00;color:#fff}
+.warn{border:1px solid var(--accent);border-radius:6px;padding:10px 14px}
+ol li{margin:6px 0}
+code{font-family:"Courier New",monospace;font-size:.95em}
+footer{color:var(--muted);font-size:.9rem;padding:40px 0;border-top:1px solid var(--rule);margin-top:40px}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+<img class="badge" src="img/hexgirl_icon.png" width="96" height="96" alt="Rosetta OS Hex Girl badge">
+<h1>Roland OCTA-CAPTURE Mod: Rosetta OS custom firmware</h1>
+<p class="lede">Free custom firmware for the Roland OCTA-CAPTURE (UA-1010) USB audio interface, built from Roland's own v1.51 update. The new boot screen runs on real hardware. Next: a channel strip with high-pass, EQ and comp on every mic input.</p>
+<img class="lcdimg" src="img/rosetta_splash_v4_preview.png" width="512" height="256" alt="The OCTA-CAPTURE's 128x64 LCD showing the Rosetta boot screen: Hex Girl peeking over the word ROSETTA">
+<div class="cta">
+<a class="btn" href="https://github.com/yuyoi/octa-capture-rosetta-OS">Get it on GitHub</a>
+<a class="btn alt" href="https://github.com/yuyoi/octa-capture-rosetta-OS/blob/main/docs/FLASHING.md">How to flash</a>
+<a class="btn alt" href="https://discord.gg/R3CQkFdRtf">Discord</a>
+</div>
+</header>
+
+<h2>What works, what's next</h2>
+<div class="grid">
+<div class="card"><span class="tag ok">on hardware</span><b>Rosetta boot screen</b><span>Hex Girl peeking over ROSETTA on the 128x64 LCD, with the boot bar along the bottom.</span></div>
+<div class="card"><span class="tag ok">on hardware</span><b>Update-file tools</b><span>Unpack, patch and repack UpdOcta.dat with correct checksums. The boot screen was flashed with them.</span></div>
+<div class="card"><span class="tag ok">tested</span><b>One-command build</b><span>From Roland's own zip to a checked UpdOcta.dat, byte-identical to the build tested on a real unit.</span></div>
+<div class="card"><span class="tag next">next</span><b>CPU-load meter</b><span>Shows how much of the Blackfin DSP is free, which sets the budget for the effects.</span></div>
+<div class="card"><span class="tag next">planned</span><b>Channel strip, all 8 mic inputs</b><span>Gain, high-pass, gate, 4-band EQ and comp per channel, each with its own settings, plus presets like Vocal, Kick and Guitar amp.</span></div>
+<div class="card"><span class="tag next">planned</span><b>Solo mode and clip guard</b><span>Solo mode: fewer channels, bigger effects. Clip guard, in place of AUTO-SENS: the preamp steps down near clipping while the monitor level stays put.</span></div>
+</div>
+
+<h2>Build and flash</h2>
+<ol>
+<li>Download Roland's <b>OCTA-CAPTURE System Program Ver.1.51</b> (<code>octa_sys_v151.zip</code>) from Roland's support site.</li>
+<li>Run <code>python tools/build_rosetta.py octa_sys_v151.zip</code>. It writes and checks <code>UpdOcta.dat</code>.</li>
+<li>Hold <b>[▶] in the PRE-AMP section</b> and <b>push the CURSOR/VALUE knob</b> while powering on.</li>
+<li>Copy <code>UpdOcta.dat</code> onto the disk that appears, once, then unplug USB and let it write.</li>
+</ol>
+<p class="warn"><b>Before copying:</b> the updater screen must not show <code>[ALL]</code>. Keep Roland's original <code>UpdOcta.dat</code>: flashing it the same way takes the unit back to stock. Full steps and recovery are in <a href="https://github.com/yuyoi/octa-capture-rosetta-OS/blob/main/docs/FLASHING.md">FLASHING.md</a>.</p>
+
+<h2>Under the hood</h2>
+<p>The OCTA-CAPTURE runs on one Analog Devices Blackfin DSP (a BF52x). Its compressors, mixers, reverb and USB audio are all software on that chip.</p>
+<p>The update file is 1 MB and maps 1:1 onto the unit's flash. The code is packed with LZSS whose history ring starts full of zeros, not spaces. Each region ends with a 16-bit byte-sum checksum that the boot code checks at every power-on.</p>
+<p>The <a href="https://github.com/yuyoi/octa-capture-rosetta-OS/blob/main/CHECKSUM_NOTES.md">checksum notes</a> and the <a href="https://github.com/yuyoi/octa-capture-rosetta-OS/blob/main/re/FLASH_SAFETY.md">flash safety map</a> have the details.</p>
+
+<footer>
+<p>Made by JunkSmithWizard (JSW) together with Claude (Anthropic's AI). Part of the Rosetta line, alongside the <a href="https://github.com/yuyoi/D110-rosetta-OS-v11">D-110</a>, <a href="https://github.com/yuyoi/Akai-S2000-Rosetta-OS">S2000</a> and <a href="https://github.com/yuyoi/Sp-808-rosetta-looper-OS-">SP-808</a> mods.</p>
+<p>Not affiliated with or endorsed by Roland Corporation. "Roland" and "OCTA-CAPTURE" are trademarks of their owners. This project contains no Roland code: you build from Roland's own update. MIT license. Flash at your own risk.</p>
+</footer>
+</div>
+</body>
+</html>
