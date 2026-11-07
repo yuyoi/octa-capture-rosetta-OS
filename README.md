@@ -31,7 +31,7 @@ It also gives you tools to unpack it, patch it and pack it back. Everything is b
 
 | Feature | Status |
 |---|---|
-| **Rosetta boot screen**: Hex Girl peeking over ROSETTA, 128x64, with the boot bar along the bottom | ✅ on hardware |
+| **Rosetta boot screen**: Hex Girl peeking over ROSETTA, 128x64, with the boot bar along the bottom | ✅ on hardware, two units |
 | **Update-file tools**: unpack, pack, checksum fix (`octa_fw.py`) | ✅ on hardware (the boot screen was flashed with them) |
 | **One-command build** from Roland's v1.51 zip (`tools/build_rosetta.py`) | ✅ rebuilds the tested file byte for byte |
 | **CPU-load meter** on the LCD: how much DSP is free | 🔜 next |
