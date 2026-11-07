@@ -71,14 +71,16 @@ static void iflush(u32 a, u32 n)
 }
 #endif
 
-/* Only memory that can't fault: SDRAM as configured, L1 data SRAM halves, scratchpad, MMRs.
- * (L1 code 0xFFA0xxxx has no DCPLB: a normal load there faults, and the fault handler just re-runs it.) */
+/* Only memory that can't hurt: SDRAM banks 0-1, L1 data SRAM halves, scratchpad, MMRs.
+ * - L1 code 0xFFA0xxxx has no DCPLB: a normal load there faults.
+ * - SDRAM 0x800000+ (controller banks 2/3) lands on the chip's banks 0/1 with the controller's open-row
+ *   bookkeeping out of step: even a read there makes later code fetches return garbage (re/RAM_MAP.md). */
 static int ok(u32 a, u32 n)
 {
     u32 e = a + n;
     if (e < a)
         return 0;
-    return (e <= 0x01000000u) ||
+    return (e <= 0x00800000u) ||
            (a >= 0xFF800000u && e <= 0xFF804000u) || (a >= 0xFF900000u && e <= 0xFF904000u) ||
            (a >= 0xFFB00000u && e <= 0xFFB01000u) || (a >= 0xFFC00000u);
 }

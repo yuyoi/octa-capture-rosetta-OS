@@ -29,7 +29,7 @@ A small SysEx backdoor in Rosetta builds that lets the PC read, write and run co
 ## Safety
 - The backend is armed only after the power-on button scan, so update mode always stays reachable.
 - **A bad address can fault the CPU.** Then the unit hangs and needs a power cycle. Nothing is written to flash, so a power cycle always recovers. `octa_lab.py` refuses addresses outside the known memory map unless you pass `--force`.
-- **memprobe** finds the SDRAM size with an alias test first. Its markers sit at 0x200000 + 0/4/8 MB, which are free whatever the chip size (below the code, or above Roland's heap at 0x44DE6C-0x4FFFFF). Only then does it fill guard patterns, and only on a proven 16 MB chip.
+- **memprobe** first checks the proven SDRAM geometry (re/RAM_MAP.md: 2 MB real, A20/A21 mirrors, 0x800000+ forbidden) with one marker in the free upload area at 0x3FFFFC: it must show at its bank-0 mirrors 0x0/0x1/0x2FFFFC and not in bank 1. Only then does it fill guard patterns over the free areas. **Never touch 0x800000-0xFFFFFF**: that killed lab1-lab3 (reads there desync the SDRAM controller and later code fetches get garbage). Lab >= 1.2 refuses it on the unit too.
 
 ## How it's built
 - `patches/lab1.S`: the hooks and the meter, plus `lab_entry`, a slim trampoline that keeps task 9's tight stack.

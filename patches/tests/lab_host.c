@@ -22,11 +22,11 @@ uint8_t *host_map(unsigned a)
 {
     static uint8_t trap[8];
     if (!sdram) sdram = calloc(1, 0x1000000);
-    if (a >= 0x00BFFF00u && a < 0x00C00000u && armed) {   /* simulated faulting window (like the unit) */
+    if (a >= 0x007FFF00u && a < 0x00800000u && armed) {   /* simulated faulting window */
         lab_fx[1] = 0x26; lab_fx[2] = a; lab_fx[3] = 0x1234; lab_fx[4] = 0x3A3000;
         longjmp(jb, 1);
     }
-    if (a < 0x1000000) return sdram + a;
+    if (a < 0x800000) return sdram + a;          /* 0x800000+ = controller banks 2/3: must be refused */
     if (a >= 0xFF800000u && a < 0xFF804000u) return l1a + (a - 0xFF800000u);
     if (a >= 0xFF900000u && a < 0xFF904000u) return l1b + (a - 0xFF900000u);
     if (a >= 0xFFB00000u && a < 0xFFB01000u) return scratch + (a - 0xFFB00000u);

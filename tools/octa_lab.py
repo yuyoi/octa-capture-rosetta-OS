@@ -13,7 +13,8 @@ Needs a unit running a Rosetta build with the lab backend (patches/lab1.S). Prot
   python tools/octa_lab.py call ADDR [R0 R1 R2]           flush I-cache over the lab code area, call, print R0
   python tools/octa_lab.py meter                          DSP load: busy / period cycles, CCLK estimate
   python tools/octa_lab.py chop on|off                    record-ch1 chopper (audible test)
-  python tools/octa_lab.py memprobe                       SDRAM size (alias test) + canaries in the free areas
+  python tools/octa_lab.py memprobe                       SDRAM geometry check + canaries in the free areas
+  python tools/octa_lab.py memcheck                       count canary words that changed since memprobe
   python tools/octa_lab.py ports                          list MIDI ports
 
 Options: --unit N (0 = first OCTA, 1 = second), --force (allow addresses outside the known-safe map).
@@ -32,13 +33,15 @@ MAXCHUNK = 64               # bytes per PEEK/POKE message (each byte = 2 nibbles
 
 # known-safe ranges (from re/RAM_MAP.md); everything else needs --force
 SAFE = [
-    (0x00000000, 0x01000000, 'SDRAM (16 MB as configured; heap 0x44de6c-0x4fffff is in use)'),
+    (0x00000000, 0x00800000, 'SDRAM (2 MB real: 1 MB at 0x300000 code, 1 MB at 0x400000 data, mirrored; 0x800000+ is NOT safe)'),
     (0xFF800000, 0xFF804000, 'L1 data A (SRAM half)'),
     (0xFF900000, 0xFF904000, 'L1 data B (SRAM half, task stacks)'),
     (0xFFB00000, 0xFFB01000, 'scratchpad (interrupt + kernel stacks)'),
     (0xFFC00000, 0xFFE00000, 'system MMRs (use --w 2/4)'),
     (0xFFE00000, 0xFFE10000, 'core MMRs (use --w 4)'),
 ]   # NOT 0xFFA0xxxx: normal loads/stores to L1 code fault (no DCPLB); the unit then hangs until a power cycle
+    # NOT 0x800000-0xFFFFFF: controller banks 2/3 land on the chip's banks 0/1 with the wrong open row, so even a
+    # read there can make later code fetches return garbage (undefined instruction / hard hang). Proven 2026-11-07.
 VARS = 0x41D5E4             # meter vars (same as dsp1): +0 ARMED +4 LAST +8 PER +0xC BMAX +0x10 FRAMES +0x14 FLAGS
 
 
@@ -161,55 +164,44 @@ def hexdump(a, data):
         print(f'{a + i:08x}  {row.hex(" "):<47}  {"".join(chr(c) if 32 <= c < 127 else "." for c in row)}')
 
 
-STATE = __file__.replace('.py', '_memprobe.json')
 CANARY = 0x5A5AA5A5
 
 
-def sdram_size(lab):
-    """Alias test. Markers at 0x200000 + 0/4/8 MB: whatever the chip size, every write lands in free SDRAM
-    (below the code, or above Roland's heap 0x44de6c-0x4fffff)."""
-    A, B, C = 0x00200000, 0x00600000, 0x00A00000
-    for addr, val in ((A, 0xA0A0A0A0), (B, 0xB0B0B0B0), (C, 0xC0C0C0C0)):
-        lab.poke(addr, struct.pack('<I', val), 4)
-    a = struct.unpack('<I', lab.peek(A, 4, 4))[0]
-    b = struct.unpack('<I', lab.peek(B, 4, 4))[0]
-    if a == 0xA0A0A0A0 and b == 0xB0B0B0B0:
-        return 16 << 20
-    if a == 0xC0C0C0C0 and b == 0xB0B0B0B0:
-        return 8 << 20
-    if a == 0xC0C0C0C0:
-        return 4 << 20
-    raise SystemExit(f'alias test unclear: A={a:#x} B={b:#x}')
+def sdram_geometry(lab):
+    """Proves the map in re/RAM_MAP.md (2 MB chip: 2 banks x 1 MB, A20/A21 ignored, 0x800000+ forbidden) without
+    touching 0x800000+: a marker at the top of the upload area (0x3ffffc) must show at its mirrors in bank 0 and
+    NOT in bank 1. Only the free word itself is written, and it is restored."""
+    rd = lambda x: struct.unpack('<I', lab.peek(x, 4, 4))[0]  # noqa: E731
+    T, MIRRORS, OTHER = 0x003FFFFC, (0x000FFFFC, 0x001FFFFC, 0x002FFFFC), (0x004FFFFC, 0x005FFFFC)
+    old, others = rd(T), [rd(x) for x in OTHER]
+    mark = old ^ 0xA5C3E10F
+    lab.poke(T, struct.pack('<I', mark), 4)
+    try:
+        missing = [x for x in MIRRORS if rd(x) != mark]
+        leaked = [x for x, v in zip(OTHER, others) if rd(x) != v]
+    finally:
+        lab.poke(T, struct.pack('<I', old), 4)
+    if missing or leaked:
+        raise SystemExit(f'geometry NOT as mapped: no mirror at {[hex(x) for x in missing]}, leaked into {[hex(x) for x in leaked]}')
+    return 2 << 20
 
 
-def probe_areas(size):
-    """Areas re/RAM_MAP.md calls free. Only for a 16 MB chip: with a smaller one the low area aliases live data."""
-    if size != 16 << 20:
-        return []
-    return [(0x00500000, 0x00B00000, 'SDRAM above heap'), (0x00010000, 0x002F0000, 'SDRAM below code'),
-            (0x003B0000, 0x00040000, 'dead init table'), (0xFF8034B8, 0x00000B48, 'L1 data A tail')]
+def probe_areas():
+    """Areas re/RAM_MAP.md calls free. Bank 1 (0x400000-0x4FFFFF) is all data + heap; bank 0 holds main's code."""
+    return [(0x003B0000, 0x00050000, 'bank 0 tail (uploads)'), (0xFF8034B8, 0x00000B48, 'L1 data A tail')]
 
 
 def memprobe(lab):
-    """SDRAM size (alias test), then canaries over the areas RAM_MAP.md calls free, inside the proven size only."""
-    import json
-    size = sdram_size(lab)
-    print(f'SDRAM: {size >> 20} MB')
-    areas = probe_areas(size)
-    if not areas:
-        print('chip is not 16 MB: no canaries (the free areas would alias live memory)')
-        return
-    for base, n, name in areas:
+    """Geometry check, then canaries over the areas RAM_MAP.md calls free."""
+    print(f'SDRAM: {sdram_geometry(lab) >> 20} MB real (2 banks x 1 MB, A20/A21 mirrors), geometry as mapped')
+    for base, n, name in probe_areas():
         lab.fill(base, n, CANARY)
         print(f'canary set: {name} {base:#x} +{n:#x}')
-    json.dump({'size': size}, open(STATE, 'w'))
     print('now use the unit normally (play, record, switch screens and rates), then: octa_lab.py memcheck')
 
 
 def memcheck(lab):
-    import json
-    size = json.load(open(STATE))['size']
-    for base, n, name in probe_areas(size):
+    for base, n, name in probe_areas():
         bad, first = lab.check(base, n, CANARY)
         print(f'{name:18s} {base:#010x} +{n:#x}: {bad} words changed' + (f', first at {first:#x}' if bad else ''))
 

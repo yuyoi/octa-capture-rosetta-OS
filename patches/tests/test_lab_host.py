@@ -78,7 +78,7 @@ def check(cond, what):
         raise SystemExit('FAIL: ' + what)
     ok += 1
 
-check(lab.ping() == (0x0101, 0x41D5E4, 0x3B0000), 'ping')
+check(lab.ping() == (0x0102, 0x41D5E4, 0x3B0000), 'ping')
 check(all(consumed), 'lab packets are swallowed')
 data = bytes(range(256))
 lab.poke(0x500000, data)
@@ -104,6 +104,10 @@ r = lab.xfer(octa_lab.CMD['PEEK'], octa_lab.nib(0xFFA00000, 8) + octa_lab.nib(16
 check(r == b'' and lib.host_faults() == 0, 'peek of L1 code refused on the unit')
 lab.xfer(octa_lab.CMD['FILL'], octa_lab.nib(0x00FFFFF0, 8) + octa_lab.nib(0x100, 8) + octa_lab.nib(1, 8))
 check(lib.host_faults() == 0, 'fill past 16 MB refused')
+r = lab.xfer(octa_lab.CMD['SUM'], octa_lab.nib(0x007FF000, 8) + octa_lab.nib(0x2000, 8))
+check(r == b'' and lib.host_faults() == 0, 'sum across 0x800000 refused on the unit')
+r = lab.xfer(octa_lab.CMD['PEEK'], octa_lab.nib(0x00800000, 8) + octa_lab.nib(16, 2) + octa_lab.nib(4, 1))
+check(r == b'' and lib.host_faults() == 0, 'peek of bank 2 refused on the unit')
 # Roland traffic must pass through untouched (not consumed), e.g. identity request and a DT1
 consumed.clear(); sent.clear()
 for w in to_packets([0x7E, 0x10, 0x06, 0x01], 1) + to_packets([0x41, 0x10, 0, 0, 0x4D, 0x12, 1, 2, 3, 4, 5, 0x71], 1):
@@ -116,13 +120,13 @@ for w in to_packets([0x7D, 0x4F, 1, 5], 0):
 check(not sent, 'no reply on cable 0')
 # reply goes back on cable 2 when asked on cable 2
 FakeOut.cable = 2
-check(lab.ping()[0] == 0x0101, 'ping on cable 2')
+check(lab.ping()[0] == 0x0102, 'ping on cable 2')
 FakeOut.cable = 1
 try:
-    lab.sum(0x00BFFFFC, 4)
+    lab.sum(0x007FFFFC, 4)
     check(False, 'fault must raise')
 except octa_lab.LabFault as e:
-    check(e.excause == 0x26 and e.addr == 0x00BFFFFC, f'fault reported: {e}')
-check(lab.ping()[0] == 0x0101, 'alive after a fault')
+    check(e.excause == 0x26 and e.addr == 0x007FFFFC, f'fault reported: {e}')
+check(lab.ping()[0] == 0x0102, 'alive after a fault')
 check(lab.sum(0x500000, 64) is not None, 'normal sum after a fault')
 print(f'ALL {ok} CHECKS PASSED')
