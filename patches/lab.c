@@ -14,6 +14,7 @@ typedef unsigned char u8;
 #define M16(a) (*(volatile u16 *)(a))
 #define M32(a) (*(volatile u32 *)(a))
 #define CALL3(a, x, y, z) (((u32 (*)(u32, u32, u32))(a))(x, y, z))
+#define CSYNC_() __asm__ volatile("CSYNC;" : : : "memory")
 #endif
 
 #define VARS 0x41d5e4u
@@ -150,76 +151,106 @@ static void send_sysex(u32 cable, const u8 *b, u32 n)
     }
 }
 
-static void exec(void)
+/* ---- guarded work: every memory touch runs under lab_guard() so a fault becomes a FAULT reply ---- */
+extern u32 lab_guard(void (*fn)(void));
+extern volatile u32 lab_fx[5];          /* armed, SEQSTAT, DCPLB_FAULT_ADDR, DCPLB_STATUS, RETX */
+static u32 g_cmd, g_a, g_n, g_w, g_pat, g_r0, g_r1, g_r2;
+
+static void work(void)
 {
-    if (rlen < 4 || rx[0] != 0x7D || rx[1] != 0x4F)
-        return;
-    u32 cmd = rx[2], seq = rx[3], have = rlen - 4;
-    static const u8 need[9] = {0, 0, 11, 11, 32, 24, 24, 16, 16};
-    if (cmd < 1 || cmd > 8 || have < need[cmd])
-        return;
-    cur = rx + 4;
-    tn = 0;
-    tx[tn++] = 0xF0; tx[tn++] = 0x7D; tx[tn++] = 0x4F; tx[tn++] = cmd | 0x40; tx[tn++] = seq;
-    switch (cmd) {
-    case 1:                                             /* PING */
-        putb(LAB_VER >> 8); putb(LAB_VER);
-        put32(VARS);
-        put32(UPLOAD_BASE);
+    switch (g_cmd) {
+    case 2:
+        peek(g_a, g_n, g_w);
         break;
-    case 2: {                                           /* PEEK */
-        u32 a = getn(8), n = getn(2), w = getn(1);
-        if (ok(a, n))
-            peek(a, n, w);
+    case 3:
+        poke(g_a, g_n, g_w);
         break;
-    }
-    case 3: {                                           /* POKE */
-        u32 a = getn(8), n = getn(2), w = getn(1);
-        if (have < 11 + 2 * n)
-            return;
-        if (ok(a, n))
-            poke(a, n, w);
-        break;
-    }
-    case 4: {                                           /* CALL */
-        u32 a = getn(8), r0 = getn(8), r1 = getn(8), r2 = getn(8);
+    case 4: {
         u32 t0 = cycles();
-        u32 r = CALL3(a, r0, r1, r2);
+        u32 r = CALL3(g_a, g_r0, g_r1, g_r2);
         u32 t1 = cycles();
         put32(r);
         put32(t1 - t0);
         break;
     }
-    case 5: case 6: case 7: {                           /* FILL / CHECK / SUM (words) */
-        u32 a = getn(8) & ~3u, n = getn(8) >> 2, pat = cmd == 7 ? 0 : getn(8);
-        if (!ok(a, 4 * n))
-            break;
-        if (cmd == 5) {
-            for (u32 i = 0; i < n; i++)
-                M32(a + 4 * i) = pat;
-        } else if (cmd == 6) {
-            u32 bad = 0, first = 0xffffffffu;
-            for (u32 i = 0; i < n; i++)
-                if (M32(a + 4 * i) != pat) {
-                    if (!bad)
-                        first = a + 4 * i;
-                    bad++;
-                }
-            put32(bad);
-            put32(first);
-        } else {
-            u32 s = 0;
-            for (u32 i = 0; i < n; i++)
-                s += M32(a + 4 * i);
-            put32(s);
-        }
+    case 5:
+        for (u32 i = 0; i < g_n; i++)
+            M32(g_a + 4 * i) = g_pat;
+        break;
+    case 6: {
+        u32 bad = 0, first = 0xffffffffu;
+        for (u32 i = 0; i < g_n; i++)
+            if (M32(g_a + 4 * i) != g_pat) {
+                if (!bad)
+                    first = g_a + 4 * i;
+                bad++;
+            }
+        put32(bad);
+        put32(first);
         break;
     }
-    case 8: {                                           /* FLUSH */
-        u32 a = getn(8), n = getn(8);
-        iflush(a, n);
+    case 7: {
+        u32 s = 0;
+        for (u32 i = 0; i < g_n; i++)
+            s += M32(g_a + 4 * i);
+        put32(s);
         break;
     }
+    case 8:
+        iflush(g_a, g_n);
+        break;
+    }
+}
+
+static void reply_head(u32 cmd, u32 seq)
+{
+    tn = 0;
+    tx[tn++] = 0xF0; tx[tn++] = 0x7D; tx[tn++] = 0x4F; tx[tn++] = cmd | 0x40; tx[tn++] = seq;
+}
+
+static void exec(void)
+{
+    if (rlen < 4 || rx[0] != 0x7D || rx[1] != 0x4F)
+        return;
+    u32 cmd = rx[2], seq = rx[3], have = rlen - 4, run = 1;
+    static const u8 need[9] = {0, 0, 11, 11, 32, 24, 24, 16, 16};
+    if (cmd < 1 || cmd > 8 || have < need[cmd])
+        return;
+    cur = rx + 4;
+    reply_head(cmd, seq);
+    g_cmd = cmd;
+    switch (cmd) {
+    case 1:                                             /* PING */
+        putb(LAB_VER >> 8); putb(LAB_VER);
+        put32(VARS);
+        put32(UPLOAD_BASE);
+        run = 0;
+        break;
+    case 2: case 3:                                     /* PEEK / POKE */
+        g_a = getn(8); g_n = getn(2); g_w = getn(1);
+        if (g_n > 64)
+            g_n = 64;
+        if (cmd == 3 && have < 11 + 2 * g_n)
+            return;
+        run = ok(g_a, g_n);
+        break;
+    case 4:                                             /* CALL */
+        g_a = getn(8); g_r0 = getn(8); g_r1 = getn(8); g_r2 = getn(8);
+        break;
+    case 5: case 6: case 7:                             /* FILL / CHECK / SUM (words) */
+        g_a = getn(8) & ~3u;
+        g_n = getn(8) >> 2;
+        g_pat = cmd == 7 ? 0 : getn(8);
+        run = ok(g_a, 4 * g_n);
+        break;
+    case 8:                                             /* FLUSH */
+        g_a = getn(8); g_n = getn(8);
+        break;
+    }
+    if (run && lab_guard(work)) {                       /* faulted: report it instead of hanging */
+        reply_head(0x3F, seq);                          /* reply cmd 0x7F = FAULT */
+        for (u32 i = 1; i < 5; i++)
+            put32(lab_fx[i]);
     }
     tx[tn++] = 0xF7;
     send_sysex(rcable, tx, tn);
@@ -250,9 +281,17 @@ static void byte_in(u32 b)
 
 /* Returns 1 if the packet belonged to a lab message (the caller then hides it from Roland's listeners).
  * Only SysEx from cables 1/2 (CTRL) ever reaches the dispatcher; cable 0 (DIN MIDI) never does. */
+extern void lab_exc(void);
+
 int lab_rx(u32 p)
 {
+    static u8 exc_on;
     u32 cin = p & 0xf, n, mine = st;
+    if (!exc_on) {                                      /* post-scan only: lab_rx runs only when ARMED */
+        exc_on = 1;
+        M32(0xFFE0200Cu) = (u32)lab_exc;                /* EVT3: our catcher (stock behaviour when idle) */
+        CSYNC_();
+    }
     pcable = (p >> 4) & 0xf;
     if (pcable != 1 && pcable != 2)
         return 0;

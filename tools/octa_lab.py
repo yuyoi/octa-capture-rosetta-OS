@@ -42,6 +42,23 @@ SAFE = [
 VARS = 0x41D5E4             # meter vars (same as dsp1): +0 ARMED +4 LAST +8 PER +0xC BMAX +0x10 FRAMES +0x14 FLAGS
 
 
+EXCAUSE = {0x21: 'undefined instruction', 0x22: 'illegal instruction combination',
+           0x23: 'data access CPLB protection violation', 0x24: 'misaligned data access',
+           0x25: 'unrecoverable event', 0x26: 'data CPLB miss', 0x27: 'data CPLB multiple hits',
+           0x28: 'emulation watchpoint', 0x2A: 'misaligned instruction', 0x2B: 'instruction CPLB protection',
+           0x2C: 'instruction CPLB miss', 0x2D: 'instruction CPLB multiple hits',
+           0x2E: 'illegal use of supervisor resource'}
+
+
+class LabFault(SystemExit):
+    """The unit caught a CPU exception while running a lab command (lab >= 1.1). The unit is still alive."""
+    def __init__(self, seqstat, addr, status, retx):
+        self.seqstat, self.addr, self.status, self.retx = seqstat, addr, status, retx
+        self.excause = seqstat & 0x3F
+        super().__init__(f'FAULT: {EXCAUSE.get(self.excause, "?")} (EXCAUSE {self.excause:#x}, SEQSTAT {seqstat:#x}), '
+                         f'DCPLB_FAULT_ADDR {addr:#010x}, DCPLB_STATUS {status:#x}, at {retx:#010x}')
+
+
 def nib(v, n):
     return [(v >> (4 * (n - 1 - k))) & 0xF for k in range(n)]
 
@@ -78,8 +95,11 @@ class Lab:
         while time.time() < end:
             for m in self.inp.iter_pending():
                 d = list(m.data) if m.type == 'sysex' else []
-                if d[:2] == MAN and len(d) >= 4 and d[2] == (cmd | 0x40) and d[3] == self.seq:
-                    return unnib(d[4:])
+                if d[:2] == MAN and len(d) >= 4 and d[3] == self.seq:
+                    if d[2] == 0x7F:
+                        raise LabFault(*struct.unpack('>4I', unnib(d[4:])[:16]))
+                    if d[2] == (cmd | 0x40):
+                        return unnib(d[4:])
             time.sleep(0.002)
         raise SystemExit(f'no reply to cmd {cmd:#x} (Rosetta lab build running? right unit?)')
 

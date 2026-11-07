@@ -24,6 +24,7 @@ Per mic channel, all 8, each with its own settings:
 - **UI:** a Rosetta scrolling-menu page per channel (never squeeze parameters).
 
 ## Wanted (user, 2026-11-07)
+- **Auto power-on:** turn on as soon as it has power (or when the PC's USB is up), no power button. The power button is read by the firmware (`dev_power` driver), so the unit may already be running in standby when plugged in. Check what main does before "power on" and whether it can skip the wait. The user REALLY wants this.
 - **"Solo channel" mode** (see below): the user says "that's what we gotta implement".
 - **Replace AUTO-SENS** (stock auto-level is useless for rock monitoring). Idea: **gain-compensated clip guard**. When the input nears clipping, step the analog preamp gain down and add the same amount back digitally right after the ADC, so the monitor and record level stay put and only the headroom changes. Needs the digital step time-aligned with the ADC latency (a few samples) to avoid clicks. Fallback: reuse that menu slot for our own pages.
 - The user has a second never-used menu feature; find out which one. Its slot can be reclaimed too.

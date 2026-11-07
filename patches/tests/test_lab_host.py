@@ -78,7 +78,7 @@ def check(cond, what):
         raise SystemExit('FAIL: ' + what)
     ok += 1
 
-check(lab.ping() == (0x0100, 0x41D5E4, 0x3B0000), 'ping')
+check(lab.ping() == (0x0101, 0x41D5E4, 0x3B0000), 'ping')
 check(all(consumed), 'lab packets are swallowed')
 data = bytes(range(256))
 lab.poke(0x500000, data)
@@ -116,5 +116,13 @@ for w in to_packets([0x7D, 0x4F, 1, 5], 0):
 check(not sent, 'no reply on cable 0')
 # reply goes back on cable 2 when asked on cable 2
 FakeOut.cable = 2
-check(lab.ping()[0] == 0x0100, 'ping on cable 2')
+check(lab.ping()[0] == 0x0101, 'ping on cable 2')
+FakeOut.cable = 1
+try:
+    lab.sum(0x00BFFFFC, 4)
+    check(False, 'fault must raise')
+except octa_lab.LabFault as e:
+    check(e.excause == 0x26 and e.addr == 0x00BFFFFC, f'fault reported: {e}')
+check(lab.ping()[0] == 0x0101, 'alive after a fault')
+check(lab.sum(0x500000, 64) is not None, 'normal sum after a fault')
 print(f'ALL {ok} CHECKS PASSED')

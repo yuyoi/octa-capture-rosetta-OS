@@ -196,6 +196,87 @@ lab_entry:
 1:      R0 = 0xf (X);                   /* not ours: exactly the two replaced instructions */
         RTS;
 
+/* ---- fault catcher (lab v1.1) ----
+ * u32 lab_guard(void (*fn)(void)): runs fn with _lab_exc armed. Returns 0, or 1 if fn faulted; then
+ * _lab_fx[1..4] = SEQSTAT, DCPLB_FAULT_ADDR, DCPLB_STATUS, RETX of the fault.
+ * _lab_exc is installed into EVT3 by lab_rx (post-scan only). When no lab access is armed it does exactly
+ * what Roland's EVT3 (0xffa012d0) does: EMUEXCPT; RTX. */
+        .global _lab_guard, _lab_exc, _lab_fx
+_lab_guard:
+        LINK 0;
+        [--SP] = (R7:4, P5:3);
+        P1.L = _lab_jb;  P1.H = _lab_jb;
+        R1 = SP;
+        [P1] = R1;
+        R1 = FP;
+        [P1 + 4] = R1;
+        P1.L = _lab_fx;  P1.H = _lab_fx;
+        R1 = 1;
+        [P1] = R1;                      /* armed */
+        SSYNC;
+        P0 = R0;
+        SP += -12;
+        CALL (P0);
+        SP += 12;
+        P1.L = _lab_fx;  P1.H = _lab_fx;
+        R1 = 0;
+        [P1] = R1;
+        R0 = 0;
+2:      (R7:4, P5:3) = [SP++];
+        UNLINK;
+        RTS;
+lab_recover:                            /* RTX lands here after a fault inside fn */
+        P1.L = _lab_jb;  P1.H = _lab_jb;
+        R1 = [P1];
+        SP = R1;
+        R1 = [P1 + 4];
+        FP = R1;
+        R0 = 0;
+        LC0 = R0;                       /* kill any hardware loop fn was in */
+        LC1 = R0;
+        L0 = 0; L1 = 0; L2 = 0; L3 = 0;
+        R0 = 1;
+        JUMP 2b;
+
+_lab_exc:
+        [--SP] = ASTAT;
+        [--SP] = R0;
+        [--SP] = P0;
+        [--SP] = P1;
+        P0.L = _lab_fx;  P0.H = _lab_fx;
+        R0 = [P0];
+        CC = R0 == 0;
+        IF CC JUMP 9f;
+        R0 = 0;
+        [P0] = R0;                      /* disarm first: a fault in here must not loop back */
+        R0 = SEQSTAT;
+        [P0 + 4] = R0;
+        P1.L = 0x0008;  P1.H = 0xffe0;  /* DCPLB_FAULT_ADDR */
+        R0 = [P1];
+        [P0 + 8] = R0;
+        P1.L = 0x0004;  P1.H = 0xffe0;  /* DCPLB_STATUS */
+        R0 = [P1];
+        [P0 + 12] = R0;
+        R0 = RETX;
+        [P0 + 16] = R0;
+        R0.L = lab_recover;  R0.H = lab_recover;
+        RETX = R0;
+        P1 = [SP++];
+        P0 = [SP++];
+        R0 = [SP++];
+        ASTAT = [SP++];
+        RTX;
+9:      P1 = [SP++];
+        P0 = [SP++];
+        R0 = [SP++];
+        ASTAT = [SP++];
+        EMUEXCPT;                       /* stock behaviour */
+        RTX;
+
+        .align 4
+_lab_fx:  .long 0, 0, 0, 0, 0
+_lab_jb:  .long 0, 0
+
 /* ---- hooks into stock code (each replaces exactly the stock bytes tools/build_dsp.py checks) ---- */
         .section .h_arm, "ax"           /* 0x31bd7a: was CALL 0x30dfdc */
         CALL arm_stub;
