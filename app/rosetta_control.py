@@ -10,18 +10,22 @@ python -I app/rosetta_control.py            run (connects to the OCTA; close Rol
 python -I app/rosetta_control.py --demo     no device, fake meters
 python -I app/rosetta_control.py --shot F  render one demo frame offscreen to F (PNG) and quit
 """
+import datetime
 import math
 import os
+import shutil
 import sys
+import time
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QLinearGradient, QPainter, QPainterPath, QPen,
-                           QIcon, QPixmap, QPolygonF, QRadialGradient)
+                           QIcon, QKeySequence, QPixmap, QPolygonF, QRadialGradient, QShortcut)
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ART = os.path.join(HERE, '..', 'art', 'app')
+RECORDINGS = os.environ.get('RD_RECDIR', r'E:\skriv 2026\recordings')   # same folder as the old OCTA REC
 
 # ---------------- palette (OCTA-CAPTURE front panel) ----------------
 PANEL = QColor('#0c0d0f')
@@ -895,6 +899,48 @@ class StripPage(QWidget):
         self.refresh_tube()
 
 
+class RecButton(QWidget):
+    """one tap: red dot + REC; while recording it glows red and shows the time"""
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.on, self.text = False, 'REC'
+        self.setFixedSize(132, 32)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip('one tap: record every input of both boxes (space bar)')
+
+    def mousePressEvent(self, e):
+        self.clicked.emit()
+
+    def set_state(self, on, text):
+        self.on, self.text = on, text
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        outer = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        p.setPen(Qt.NoPen)
+        p.setBrush(silver(outer))
+        p.drawRoundedRect(outer, 5, 5)
+        r = outer.adjusted(2, 2, -2, -2)
+        g = QLinearGradient(r.topLeft(), r.bottomLeft())
+        if self.on:
+            g.setColorAt(0, QColor('#ff5a4a'))
+            g.setColorAt(1, QColor('#a81a12'))
+        else:
+            g.setColorAt(0, QColor('#2a2d32'))
+            g.setColorAt(1, QColor('#15171a'))
+        p.setBrush(g)
+        p.drawRoundedRect(r, 3.5, 3.5)
+        p.setBrush(QColor('#ffffff') if self.on else QColor('#ff4436'))
+        p.drawEllipse(QPointF(r.left() + 16, r.center().y()), 6, 6)
+        p.setPen(QColor('#ffffff'))
+        p.setFont(font(13, True))
+        p.drawText(r.adjusted(30, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, self.text)
+
+
 class Main(QWidget):
     def __init__(self, demo=False):
         super().__init__()
@@ -905,6 +951,7 @@ class Main(QWidget):
         pal.setColor(self.backgroundRole(), PANEL)
         self.setPalette(pal)
         self.setAutoFillBackground(True)
+        self.engine, self.usb_rate, self.usb_boxes, self.recording, self.take_dir, self.rec_t0 = None, 0, 0, False, '', 0
         self.units = [dict(chans=[default_chan(demo) for _ in range(8)], link=None) for _ in range(2)]
         self.cur = 0
         self.chans = self.units[0]['chans']
@@ -942,6 +989,13 @@ class Main(QWidget):
             pages.addWidget(b)
             self.pagebtn.append(b)
         pages.addStretch(1)
+        self.rec_info = QLabel('')
+        self.rec_info.setStyleSheet('color:#c9ced4;font:bold 12px "Segoe UI";')
+        pages.addWidget(self.rec_info)
+        self.rec = RecButton()
+        self.rec.clicked.connect(self.toggle_rec)
+        pages.addWidget(self.rec)
+        QShortcut(QKeySequence(Qt.Key_Space), self, activated=self.toggle_rec)
         col.addLayout(pages)
         self.strip = StripPage(self.chans)
         col.addWidget(self.strip, 1)
@@ -961,12 +1015,102 @@ class Main(QWidget):
             from octa_link import Link
             for i, u in enumerate(self.units):
                 L = u['link'] = Link(i)
-                L.status.connect(lambda t, o, k=i: self.header.unit_status(k, t, o))
+                L.status.connect(lambda t, o, k=i: self.usb_rate or self.header.unit_status(k, t, o))
                 L.meters.connect(lambda db, gr, k=i: k == self.cur and self.on_meters(db, gr))
                 L.preamp.connect(lambda ch, g, ph, k=i: k == self.cur and self.strip.on_preamp(ch, g, ph))
                 L.flags.connect(lambda fl, k=i: self.on_flags(k, fl))
                 L.start()
             self.strip.link = self.units[0]['link']
+            from octa_engine import Engine
+            self.engine = Engine()
+            self.engine.ready.connect(self.on_engine_ready)
+            self.engine.meters.connect(lambda box, db: box == self.cur and self.on_meters(db, 0.0))
+            self.engine.started.connect(self.on_rec_started)
+            self.engine.done.connect(self.finish_take)
+            self.engine.error.connect(lambda t: self.rec_info.setText('ENGINE: ' + t))
+            self.engine.start()
+        self.rec_timer = QTimer(self)
+        self.rec_timer.timeout.connect(self.rec_tick)
+
+    # ---------------- one-tap recorder (boxes on WinUSB, see octa_engine.py) ----------------
+    def free_text(self):
+        try:
+            free = shutil.disk_usage(RECORDINGS).free
+        except OSError:
+            return 'recordings folder missing'
+        mins = free / (self.usb_rate * 3 * 20) / 60
+        return f'{free / 1e9:.1f} GB free, about {mins:.0f} min of 20 tracks'
+
+    def on_engine_ready(self, boxes, rate):
+        self.usb_rate, self.usb_boxes = rate, boxes
+        for u in self.units:                          # the Roland MIDI path is not there while the boxes are on WinUSB
+            if u['link']:
+                u['link'].stop = True
+        self.strip.link = None
+        os.makedirs(RECORDINGS, exist_ok=True)
+        self.header.units.clear()
+        self.header.set_status(f'USB DIRECT   {boxes} box{"es" if boxes > 1 else ""}   {rate / 1000:g} kHz', True)
+        self.rec_info.setText(self.free_text())
+
+    def toggle_rec(self):
+        if not self.usb_rate:
+            self.rec_info.setText('REC needs the boxes on our USB driver')
+            return
+        if self.recording:
+            self.rec.set_state(True, 'SAVING')
+            self.engine.stop()
+            self.rec_timer.stop()
+            return
+        if shutil.disk_usage(RECORDINGS).free < 200e6:
+            self.rec_info.setText('disk is full: free some space first')
+            return
+        self.take_dir = os.path.join(RECORDINGS, datetime.datetime.now().strftime('take %Y-%m-%d %H-%M-%S'))
+        os.makedirs(self.take_dir, exist_ok=True)
+        self.recording = True
+        self.engine.rec(self.take_dir)
+
+    def on_rec_started(self):
+        self.rec_t0 = time.time()
+        self.rec.set_state(True, '0:00')
+        self.rec_info.setText('recording every input')
+        self.rec_timer.start(250)
+
+    def rec_tick(self):
+        s = int(time.time() - self.rec_t0)
+        self.rec.set_state(True, f'{s // 60}:{s % 60:02d}')
+
+    def track_filename(self, box, inp):
+        """Vocal.wav from the input's name; unnamed inputs stay findable"""
+        if inp > 8:
+            base = f'box{box} digital {"L" if inp == 9 else "R"}'
+        else:
+            t = load_tracks(box - 1)[inp - 1].get('name', '').strip()
+            base = ''.join(ch for ch in t if ch.isalnum() or ch in ' -_').strip() or f'box{box} in{inp:02d}'
+        name, k = base + '.wav', 2
+        while os.path.exists(os.path.join(self.take_dir, name)):
+            name, k = f'{base} {k}.wav', k + 1
+        return name
+
+    def finish_take(self, secs, dropouts, ppm, kept):
+        if not self.recording:
+            return
+        self.recording = False
+        self.rec_timer.stop()
+        for box, inp in kept:
+            src = os.path.join(self.take_dir, f'b{box}_in{inp:02d}.wav')
+            if os.path.exists(src):
+                os.replace(src, os.path.join(self.take_dir, self.track_filename(box, inp)))
+        self.rec.set_state(False, 'REC')
+        if not kept:
+            try:
+                os.rmdir(self.take_dir)
+            except OSError:
+                pass
+            self.rec_info.setText('nothing above -60 dB: take deleted')
+            return
+        warn = f'   {dropouts} DROPOUTS' if dropouts else ''
+        self.rec_info.setText(f'{len(kept)} tracks, {int(secs) // 60}:{int(secs) % 60:02d} saved in '
+                              f'{os.path.basename(self.take_dir)}{warn}')
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -1018,6 +1162,12 @@ class Main(QWidget):
         for u in self.units:
             if u['link']:
                 u['link'].stop = True
+        if self.engine:
+            if self.recording:                        # never lose a take to the X button
+                self.engine.stop()
+                if self.engine.finished.wait(60) and self.engine.result:
+                    self.finish_take(*self.engine.result)
+            self.engine.quit()
         super().closeEvent(e)
 
     def demo_tick(self):
