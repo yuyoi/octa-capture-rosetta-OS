@@ -1,4 +1,4 @@
-"""Rosetta Control: the PC editor for the OCTA-CAPTURE running Rosetta OS (replaces Roland's Control Panel).
+"""Rosetta Octa Control: the PC editor for the OCTA-CAPTURE running Rosetta OS (replaces Roland's Control Panel).
 Look: modelled on the unit's front panel: black, silver outlines, a bit of grey, blue buttons, the violet-on-white LCD.
 
 v1 = live STRIP page (app/octa_link.py): the EQ curve you drag, silver knobs, the blue tube that glows with DRIVE,
@@ -14,10 +14,11 @@ import math
 import os
 import sys
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QLinearGradient, QPainter, QPainterPath, QPen,
-                           QPixmap, QPolygonF, QRadialGradient)
-from PySide6.QtWidgets import (QApplication, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget)
+                           QIcon, QPixmap, QPolygonF, QRadialGradient)
+from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ART = os.path.join(HERE, '..', 'art', 'app')
@@ -30,8 +31,9 @@ GREY_T = QColor('#8d939b')
 TEXT = QColor('#c9ced4')
 BLUE = QColor('#2d6bd2')
 BLUE_LIT = QColor('#62b2ff')
-LCD_BG = QColor('#e8ebf0')
-LCD_INK = QColor('#4a3a8e')
+LCD_BG = QColor('#070a10')                 # dark glass (user: no white screens)
+LCD_INK = QColor('#62b2ff')
+INK = (98, 178, 255)
 HOT = QColor('#ff5a4a')
 FS = 48000.0
 
@@ -118,9 +120,12 @@ class Panel(QWidget):
         p.drawRoundedRect(r.adjusted(2.5, 2.5, -2.5, -2.5), 7, 7)
         if self.title:
             p.setFont(font(12, True))
-            p.setPen(GREY_T)
-            p.drawText(QRectF(r.left() + 14, r.top() + 6, r.width() - 28, 18), Qt.AlignLeft | Qt.AlignVCenter, self.title)
-
+            p.setPen(QColor('#eef0f2'))
+            tr = QRectF(r.left() + 14, r.top() + 6, r.width() - 28, 18)
+            w = p.fontMetrics().horizontalAdvance(self.title)
+            p.drawText(tr, Qt.AlignLeft | Qt.AlignVCenter, self.title)
+            p.setPen(QPen(QColor(220, 224, 228, 70), 1))
+            p.drawLine(QPointF(tr.left() + w + 8, tr.center().y()), QPointF(tr.right(), tr.center().y()))
 
 class BlueButton(QWidget):
     toggled = Signal(bool)
@@ -140,31 +145,33 @@ class BlueButton(QWidget):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
-        if self.checked:                                                   # lit: soft blue glow behind
-            glow = QRadialGradient(r.center(), r.width() * 0.75)
-            glow.setColorAt(0, QColor(98, 178, 255, 90))
-            glow.setColorAt(1, QColor(98, 178, 255, 0))
+        r = QRectF(self.rect()).adjusted(3, 3, -3, -3)
+        if self.checked:                                                   # backlight bleeding out of the bezel
+            glow = QRadialGradient(r.center(), r.width() * 0.8)
+            glow.setColorAt(0, QColor(80, 160, 255, 110))
+            glow.setColorAt(1, QColor(80, 160, 255, 0))
             p.fillRect(self.rect(), glow)
+        p.setPen(Qt.NoPen)                                                 # silver bezel
+        p.setBrush(silver(QRectF(self.rect())))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 5, 5)
         g = QLinearGradient(r.topLeft(), r.bottomLeft())
         if self.checked:
-            g.setColorAt(0, QColor('#7cc0ff'))
-            g.setColorAt(0.5, QColor('#3a86e8'))
-            g.setColorAt(1, QColor('#2459b8'))
+            g.setColorAt(0, QColor('#bfe3ff'))
+            g.setColorAt(0.35, QColor('#5aa9ff'))
+            g.setColorAt(1, QColor('#2a6fe0'))
         else:
-            g.setColorAt(0, QColor('#33507a'))
-            g.setColorAt(0.5, QColor('#22395c'))
-            g.setColorAt(1, QColor('#182a45'))
+            g.setColorAt(0, QColor('#d9dcdf'))
+            g.setColorAt(0.5, QColor('#b4b8bd'))
+            g.setColorAt(1, QColor('#959aa0'))
         p.setBrush(g)
-        p.setPen(QPen(QBrush(silver(r)), 1.6))
-        p.drawRoundedRect(r, 6, 6)
-        p.setPen(QColor('#ffffff') if self.checked else QColor('#9fb4d4'))
+        p.setPen(QPen(QColor(0, 0, 0, 120), 1))
+        p.drawRoundedRect(r, 3.5, 3.5)
+        p.setPen(QColor('#ffffff') if self.checked else QColor('#24272b'))
         p.setFont(font(12, True))
         p.drawText(r, Qt.AlignCenter, self.text)
 
-
 class Knob(QWidget):
-    """silver knurled knob: conical sheen, grip notches, blue value arc + tick ring, value under it"""
+    """the unit's knob: black rubber cap on a brushed-silver skirt, white pointer + dot scale (lit part blue)"""
     changed = Signal(float)
 
     def __init__(self, label, lo, hi, val, fmt='{:.1f}', unit='', log=False, size=64, parent=None):
@@ -207,47 +214,45 @@ class Knob(QWidget):
         cx, cy, R = self.width() / 2, 22 + self.s / 2, self.s / 2
         a0, sweep = 225, -270
         f = self.frac()
-        # tick ring
+        # dot scale (white, like the MAIN OUT scale), lit part blue
         for i in range(21):
             t = i / 20
             a = math.radians(a0 + sweep * t)
-            r0, r1 = R + 4, R + (8 if i % 5 == 0 else 6)
-            p.setPen(QPen(BLUE_LIT if t <= f + 1e-6 else QColor('#3b4048'), 1.6 if t <= f + 1e-6 else 1.2))
-            p.drawLine(QPointF(cx + r0 * math.cos(a), cy - r0 * math.sin(a)),
-                       QPointF(cx + r1 * math.cos(a), cy - r1 * math.sin(a)))
-        # value arc
-        arc = QRectF(cx - R - 2, cy - R - 2, 2 * R + 4, 2 * R + 4)
-        p.setPen(QPen(QColor(98, 178, 255, 200), 2.2, Qt.SolidLine, Qt.RoundCap))
-        p.drawArc(arc, int(a0 * 16), int(sweep * f * 16))
-        # shadow + knurled skirt
+            rr = R + 6
+            lit = t <= f + 1e-6
+            p.setPen(Qt.NoPen)
+            p.setBrush(BLUE_LIT if lit else QColor(225, 228, 232, 150))
+            d = 1.9 if (i % 5 == 0 or lit) else 1.3
+            p.drawEllipse(QPointF(cx + rr * math.cos(a), cy - rr * math.sin(a)), d, d)
+        # shadow, brushed silver skirt, black rubber cap
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(0, 0, 0, 150))
-        p.drawEllipse(QPointF(cx + 1.5, cy + 2.5), R - 2, R - 2)
-        skirt = QConicalGradient(QPointF(cx, cy), 0)
-        for t, c in ((0, '#e9ecef'), (0.12, '#7d838a'), (0.25, '#d7dadd'), (0.4, '#6c7279'), (0.55, '#f1f3f5'),
-                     (0.7, '#80868d'), (0.85, '#cfd3d7'), (1, '#e9ecef')):
+        p.setBrush(QColor(0, 0, 0, 160))
+        p.drawEllipse(QPointF(cx + 1.5, cy + 2.5), R - 1, R - 1)
+        skirt = QConicalGradient(QPointF(cx, cy), 30)
+        for t, c in ((0, '#f2f4f6'), (0.15, '#80868d'), (0.3, '#dcdfe2'), (0.45, '#6f757c'), (0.6, '#eef0f2'),
+                     (0.75, '#868c93'), (0.9, '#d2d6da'), (1, '#f2f4f6')):
             skirt.setColorAt(t, QColor(c))
         p.setBrush(skirt)
-        p.drawEllipse(QPointF(cx, cy), R - 3, R - 3)
-        p.setPen(QPen(QColor(40, 44, 50, 170), 1))                          # grip notches
-        for i in range(36):
-            a = math.radians(i * 10)
-            p.drawLine(QPointF(cx + (R - 7) * math.cos(a), cy - (R - 7) * math.sin(a)),
-                       QPointF(cx + (R - 3.5) * math.cos(a), cy - (R - 3.5) * math.sin(a)))
-        cap = QRadialGradient(QPointF(cx - R * 0.25, cy - R * 0.3), R)       # brushed cap
-        cap.setColorAt(0, QColor('#ffffff'))
-        cap.setColorAt(0.5, QColor('#c3c8cd'))
-        cap.setColorAt(1, QColor('#7a8087'))
+        p.drawEllipse(QPointF(cx, cy), R - 1, R - 1)
+        cap = QRadialGradient(QPointF(cx - R * 0.3, cy - R * 0.35), R * 1.1)
+        cap.setColorAt(0, QColor('#4a4e54'))
+        cap.setColorAt(0.45, QColor('#1d1f23'))
+        cap.setColorAt(1, QColor('#0a0b0d'))
         p.setBrush(cap)
-        p.setPen(QPen(QColor('#5d636a'), 1))
-        p.drawEllipse(QPointF(cx, cy), R - 9, R - 9)
-        a = math.radians(a0 + sweep * f)                                      # pointer
-        p.setPen(QPen(QColor('#17191c'), 2.6, Qt.SolidLine, Qt.RoundCap))
-        p.drawLine(QPointF(cx + (R * 0.18) * math.cos(a), cy - (R * 0.18) * math.sin(a)),
-                   QPointF(cx + (R - 11) * math.cos(a), cy - (R - 11) * math.sin(a)))
+        p.setPen(QPen(QColor(0, 0, 0, 200), 1))
+        p.drawEllipse(QPointF(cx, cy), R - 5, R - 5)
+        p.setPen(QPen(QColor(0, 0, 0, 90), 1))                               # rubber grip ridges
+        for i in range(24):
+            a = math.radians(i * 15)
+            p.drawLine(QPointF(cx + (R - 9) * math.cos(a), cy - (R - 9) * math.sin(a)),
+                       QPointF(cx + (R - 5.5) * math.cos(a), cy - (R - 5.5) * math.sin(a)))
+        a = math.radians(a0 + sweep * f)                                      # white pointer line
+        p.setPen(QPen(QColor('#f4f6f8'), 2.4, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(cx + (R * 0.25) * math.cos(a), cy - (R * 0.25) * math.sin(a)),
+                   QPointF(cx + (R - 7) * math.cos(a), cy - (R - 7) * math.sin(a)))
         # label + value
         p.setFont(font(11, True))
-        p.setPen(GREY_T)
+        p.setPen(QColor('#e6e9ec'))
         p.drawText(QRectF(0, 0, self.width(), 12), Qt.AlignCenter, self.label)
         p.setFont(font(12, True))
         p.setPen(TEXT)
@@ -256,7 +261,7 @@ class Knob(QWidget):
 
 
 class LcdEq(QWidget):
-    """the EQ curve on a screen styled like the unit's LCD (violet ink on white glass, silver bezel); drag the nodes"""
+    """the EQ curve on a dark glass screen in a silver bezel, blue ink; drag the nodes"""
     edited = Signal()
 
     NODES = [('hpf', 'hpf_f', None), ('low', 'low_f', 'low_g'), ('peak', 'peak_f', 'peak_g'), ('high', 'high_f', 'high_g')]
@@ -330,8 +335,8 @@ class LcdEq(QWidget):
         p.drawRoundedRect(outer, 8, 8)
         glass = outer.adjusted(7, 7, -7, -7)
         g = QLinearGradient(glass.topLeft(), glass.bottomLeft())
-        g.setColorAt(0, QColor('#f3f5f8'))
-        g.setColorAt(1, QColor('#dde1e8'))
+        g.setColorAt(0, QColor('#0d1320'))
+        g.setColorAt(1, QColor('#05070c'))
         p.setPen(Qt.NoPen)
         p.setBrush(g)
         p.drawRoundedRect(glass, 4, 4)
@@ -339,15 +344,15 @@ class LcdEq(QWidget):
         p.setFont(font(10, True))
         for db in (-12, -6, 0, 6, 12):                                        # grid
             y = self.dy(db)
-            p.setPen(QPen(QColor(74, 58, 142, 90 if db == 0 else 40), 1, Qt.SolidLine if db == 0 else Qt.DotLine))
+            p.setPen(QPen(QColor(*INK, 90 if db == 0 else 34), 1, Qt.SolidLine if db == 0 else Qt.DotLine))
             p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
-            p.setPen(QColor(74, 58, 142, 150))
+            p.setPen(QColor(*INK, 150))
             p.drawText(QRectF(r.left() + 2, y - 12, 40, 12), Qt.AlignLeft, f'{db:+d}' if db else '0')
         for f in (50, 100, 200, 500, 1000, 2000, 5000, 10000):
             x = self.fx(f)
-            p.setPen(QPen(QColor(74, 58, 142, 40), 1, Qt.DotLine))
+            p.setPen(QPen(QColor(*INK, 34), 1, Qt.DotLine))
             p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
-            p.setPen(QColor(74, 58, 142, 150))
+            p.setPen(QColor(*INK, 150))
             p.drawText(QRectF(x - 20, r.bottom() + 4, 40, 14), Qt.AlignCenter, f'{f // 1000}K' if f >= 1000 else str(f))
         st = self.stages()
         n = 240
@@ -357,7 +362,7 @@ class LcdEq(QWidget):
             pts.append(QPointF(self.fx(f), self.dy(max(-18, min(18, mag_db(st, f))))))
         y0 = self.dy(0)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(74, 58, 142, 38))
+        p.setBrush(QColor(*INK, 46))
         for a, b in zip(pts, pts[1:]):                                        # fill between curve and 0 dB
             p.drawPolygon(QPolygonF([QPointF(a.x(), y0), a, b, QPointF(b.x(), y0)]))
         p.setBrush(Qt.NoBrush)
@@ -430,21 +435,199 @@ class TubeView(QWidget):
         p.setOpacity(1)
 
 
+# ---------------- track names + pictures (saved in app/tracks.json, not in git) ----------------
+ICONS = ['vocal', 'guitar', 'bass', 'acoustic', 'synth', 'kick', 'snare', 'cymbal', 'sampler', 'amp']
+TRACKS = os.path.join(HERE, 'tracks.json')
+
+
+def load_tracks():
+    import json
+    try:
+        t = json.load(open(TRACKS, encoding='utf-8'))
+        if isinstance(t, list) and len(t) == 8:
+            return t
+    except Exception:
+        pass
+    return [dict(name='', icon='') for _ in range(8)]
+
+
+def save_tracks(t):
+    import json
+    try:
+        json.dump(t, open(TRACKS, 'w', encoding='utf-8'), indent=1)
+    except Exception:
+        pass
+
+
+def icon_pixmap(icon):
+    """built-in name -> art/app/icons/NAME.png, else a path to the user's own picture"""
+    if not icon:
+        return QPixmap()
+    fn = os.path.join(ART, 'icons', icon + '.png') if icon in ICONS else icon
+    return QPixmap(fn) if os.path.exists(fn) else QPixmap()
+
+
+def rounded_pix(p, pm, rect, radius=6):
+    path = QPainterPath()
+    path.addRoundedRect(rect, radius, radius)
+    p.save()
+    p.setClipPath(path)
+    side = min(pm.width(), pm.height())
+    src = QRectF((pm.width() - side) / 2, (pm.height() - side) / 2, side, side)
+    p.drawPixmap(rect, pm, src)
+    p.restore()
+
+
+class TrackButton(QWidget):
+    """a channel in the rail: picture + number + name; lit blue when selected. Double-click / right-click = edit."""
+    clicked = Signal()
+    edit = Signal()
+
+    def __init__(self, n, parent=None):
+        super().__init__(parent)
+        self.n, self.name, self.pm, self.checked = n, '', QPixmap(), False
+        self.setFixedSize(150, 52)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip('double-click or right-click: name + picture')
+
+    def set_track(self, t):
+        self.name = t.get('name', '')
+        self.pm = icon_pixmap(t.get('icon', ''))
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.RightButton:
+            self.edit.emit()
+        else:
+            self.clicked.emit()
+
+    def mouseDoubleClickEvent(self, e):
+        self.edit.emit()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        outer = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if self.checked:
+            glow = QRadialGradient(outer.center(), outer.width() * 0.7)
+            glow.setColorAt(0, QColor(80, 160, 255, 90))
+            glow.setColorAt(1, QColor(80, 160, 255, 0))
+            p.fillRect(self.rect(), glow)
+        p.setPen(Qt.NoPen)
+        p.setBrush(silver(outer))
+        p.drawRoundedRect(outer, 6, 6)
+        r = outer.adjusted(2, 2, -2, -2)
+        g = QLinearGradient(r.topLeft(), r.bottomLeft())
+        if self.checked:
+            g.setColorAt(0, QColor('#2d6bd2'))
+            g.setColorAt(1, QColor('#173f86'))
+        else:
+            g.setColorAt(0, QColor('#1d2025'))
+            g.setColorAt(1, QColor('#111316'))
+        p.setBrush(g)
+        p.drawRoundedRect(r, 4.5, 4.5)
+        pic = QRectF(r.left() + 4, r.top() + 4, r.height() - 8, r.height() - 8)
+        if not self.pm.isNull():
+            rounded_pix(p, self.pm, pic, 5)
+        else:
+            p.setBrush(QColor('#0a0b0d'))
+            p.drawRoundedRect(pic, 5, 5)
+        p.setPen(QColor('#ffffff') if self.checked else QColor('#e6e9ec'))
+        p.setFont(font(15, True))
+        tx = pic.right() + 8
+        if self.name:
+            p.drawText(QRectF(tx, r.top() + 3, r.right() - tx - 4, 20), Qt.AlignLeft | Qt.AlignVCenter, str(self.n + 1))
+            p.setFont(font(12, True))
+            p.setPen(QColor('#cfe6ff') if self.checked else GREY_T)
+            el = p.fontMetrics().elidedText(self.name.upper(), Qt.ElideRight, int(r.right() - tx - 4))
+            p.drawText(QRectF(tx, r.top() + 23, r.right() - tx - 4, 18), Qt.AlignLeft | Qt.AlignVCenter, el)
+        else:
+            p.drawText(QRectF(tx, r.top(), r.right() - tx - 4, r.height()), Qt.AlignLeft | Qt.AlignVCenter,
+                       str(self.n + 1))
+
+
+class TrackDialog(QDialog):
+    """name + picture for one input: built-in stickers, your own picture, or none"""
+
+    def __init__(self, n, t, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f'Input {n + 1}')
+        self.icon = t.get('icon', '')
+        self.setStyleSheet('QDialog{background:#111316;} QLabel{color:#e6e9ec;font:bold 12px "Segoe UI";}'
+                           'QLineEdit{background:#05070c;color:#62b2ff;border:2px solid #8c9299;border-radius:5px;'
+                           'padding:6px;font:bold 15px "Segoe UI";}'
+                           'QPushButton{background:#b4b8bd;color:#24272b;border:2px solid #d6d9dd;border-radius:5px;'
+                           'padding:6px 12px;font:bold 12px "Segoe UI";} QPushButton:checked{background:#3a86e8;color:white;}')
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f'INPUT {n + 1}  NAME'))
+        self.edit = QLineEdit(t.get('name', ''))
+        self.edit.setMaxLength(24)
+        self.edit.setPlaceholderText('VOCAL, GUITAR L, KICK ...')
+        lay.addWidget(self.edit)
+        lay.addWidget(QLabel('PICTURE'))
+        grid = QGridLayout()
+        self.btns = {}
+        for i, k in enumerate(ICONS):
+            b = QPushButton()
+            b.setCheckable(True)
+            b.setIcon(QIcon(icon_pixmap(k)))
+            b.setIconSize(QSize(56, 56))
+            b.setFixedSize(72, 72)
+            b.setToolTip(k)
+            b.clicked.connect(lambda _=False, kk=k: self.choose(kk))
+            grid.addWidget(b, i // 5, i % 5)
+            self.btns[k] = b
+        lay.addLayout(grid)
+        row = QHBoxLayout()
+        own = QPushButton('OWN PICTURE...')
+        own.clicked.connect(self.own)
+        none = QPushButton('NO PICTURE')
+        none.clicked.connect(lambda: self.choose(''))
+        row.addWidget(own)
+        row.addWidget(none)
+        row.addStretch(1)
+        ok = QPushButton('OK')
+        ok.clicked.connect(self.accept)
+        row.addWidget(ok)
+        lay.addLayout(row)
+        self.choose(self.icon)
+
+    def choose(self, k):
+        self.icon = k
+        for kk, b in self.btns.items():
+            b.setChecked(kk == k)
+
+    def own(self):
+        fn, _ = QFileDialog.getOpenFileName(self, 'Picture for this input', '', 'Images (*.png *.jpg *.jpeg *.gif *.bmp)')
+        if fn:
+            self.choose(fn)
+
+    def result_track(self):
+        return dict(name=self.edit.text().strip(), icon=self.icon)
+
+
 class ChannelRail(QWidget):
     picked = Signal(int)
+    renamed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
+        self.tracks = load_tracks()
         self.btns, self.meters = [], []
         for i in range(8):
             row = QHBoxLayout()
-            b = BlueButton(str(i + 1), checked=(i == 0), w=46, h=40)
-            b.toggled.connect(lambda _, k=i: self.pick(k))
+            row.setSpacing(6)
+            b = TrackButton(i)
+            b.checked = i == 0
+            b.set_track(self.tracks[i])
+            b.clicked.connect(lambda k=i: self.pick(k))
+            b.edit.connect(lambda k=i: self.edit(k))
             m = Meter(10)
-            m.setFixedHeight(40)
+            m.setFixedHeight(52)
             row.addWidget(b)
             row.addWidget(m)
             lay.addLayout(row)
@@ -457,6 +640,18 @@ class ChannelRail(QWidget):
             b.checked = i == k
             b.update()
         self.picked.emit(k)
+
+    def edit(self, k):
+        d = TrackDialog(k, self.tracks[k], self)
+        if d.exec():
+            self.tracks[k] = d.result_track()
+            self.btns[k].set_track(self.tracks[k])
+            save_tracks(self.tracks)
+            self.renamed.emit()
+
+    def label(self, k):
+        n = self.tracks[k].get('name', '')
+        return f'{k + 1}  {n.upper()}' if n else f'INPUT {k + 1}'
 
 
 class Header(QWidget):
@@ -482,11 +677,11 @@ class Header(QWidget):
         f = font(24, True)
         f.setLetterSpacing(QFont.PercentageSpacing, 118)
         tp = QPainterPath()
-        tp.addText(QPointF(20, 38), f, 'ROSETTA CONTROL')
+        tp.addText(QPointF(20, 38), f, 'ROSETTA OCTA CONTROL')
         p.fillPath(tp, QBrush(silver(QRectF(0, 14, 10, 28))))
         p.setFont(font(12, True))
         p.setPen(GREY_T)
-        p.drawText(QRectF(320, 22, 300, 20), Qt.AlignLeft | Qt.AlignVCenter, 'OCTA-CAPTURE  ·  ROSETTA OS')
+        p.drawText(QRectF(410, 22, 300, 20), Qt.AlignLeft | Qt.AlignVCenter, 'OCTA-CAPTURE  ·  ROSETTA OS')
         p.setPen(Qt.NoPen)                                                     # status LED
         p.setBrush(BLUE_LIT if self.online else QColor('#ffb14a'))
         p.drawEllipse(QPointF(r.right() - 330, 30), 5, 5)
@@ -516,7 +711,7 @@ class StripPage(QWidget):
         mid = QHBoxLayout()
         mid.setSpacing(10)
         # EQ panel
-        eqp = Panel('EQ')
+        eqp = self.eqp = Panel('EQ')
         ev = QVBoxLayout(eqp)
         ev.setContentsMargins(14, 30, 14, 10)
         self.eq = LcdEq(c)
@@ -682,15 +877,16 @@ class StripPage(QWidget):
 class Main(QWidget):
     def __init__(self, demo=False):
         super().__init__()
-        self.setWindowTitle('Rosetta Control')
-        self.resize(1360, 900)
+        self.setWindowTitle('Rosetta Octa Control')
+        self.setWindowIcon(QIcon(os.path.join(ART, 'app_icon.ico')))
+        self.resize(1460, 910)
         pal = self.palette()
         pal.setColor(self.backgroundRole(), PANEL)
         self.setPalette(pal)
         self.setAutoFillBackground(True)
         self.chans = [default_chan(demo) for _ in range(8)]
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(0)
         self.header = Header()
         root.addWidget(self.header)
@@ -702,7 +898,7 @@ class Main(QWidget):
         rl.setContentsMargins(12, 30, 12, 12)
         self.rail = ChannelRail()
         rl.addWidget(self.rail)
-        railp.setFixedWidth(96)
+        railp.setFixedWidth(196)
         body.addWidget(railp)
         col = QVBoxLayout()
         col.setSpacing(10)
@@ -720,6 +916,9 @@ class Main(QWidget):
         body.addLayout(col, 1)
         root.addLayout(body, 1)
         self.rail.picked.connect(self.strip.show_chan)
+        self.rail.picked.connect(lambda k: self.retitle())
+        self.rail.renamed.connect(self.retitle)
+        self.retitle()
         self.t = 0
         if demo:
             self.timer = QTimer(self)
@@ -735,6 +934,21 @@ class Main(QWidget):
             self.link.preamp.connect(self.strip.on_preamp)
             self.link.flags.connect(self.strip.on_flags)
             self.link.start()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect())
+        p.fillRect(r, PANEL)
+        for k, w in ((0, 7), (7, 2)):                                     # chamfered rim: bright outer, dark inner step
+            rr = r.adjusted(k + w / 2, k + w / 2, -k - w / 2, -k - w / 2)
+            p.setPen(QPen(QBrush(silver(rr)) if k == 0 else QColor(0, 0, 0, 180), w))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(rr, 12 - k, 12 - k)
+
+    def retitle(self):
+        self.strip.eqp.title = 'EQ   ·   ' + self.rail.label(self.strip.ch)
+        self.strip.eqp.update()
 
     def on_meters(self, db, gr):
         for i, m in enumerate(self.rail.meters):
@@ -761,7 +975,15 @@ class Main(QWidget):
 
 def main():
     sys.path.insert(0, HERE)
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('Rosetta.OctaControl')
+        except Exception:
+            pass
     app = QApplication(sys.argv[:1])
+    app.setApplicationName('Rosetta Octa Control')
+    app.setWindowIcon(QIcon(os.path.join(ART, 'app_icon.ico')))
     w = Main(demo='--demo' in sys.argv or '--shot' in sys.argv)
     if '--shot' in sys.argv:
         out = sys.argv[sys.argv.index('--shot') + 1]

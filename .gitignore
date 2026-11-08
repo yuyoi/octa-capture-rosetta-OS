@@ -33,6 +33,9 @@
 !/art/app/
 /art/app/*
 !/art/app/tube/
+!/art/app/icons/
+!/art/app/app_icon.png
+!/art/app/app_icon.ico
 !/art/app/shot_v*.png
 !/art/screens/
 /art/screens/*
@@ -43,3 +46,5 @@ __pycache__/
 *.dis
 *.zip
 tools/*_memprobe.json
+/app/tracks.json
+/app/__pycache__/

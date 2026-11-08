@@ -2,11 +2,11 @@
 
 <p align="center"><a href="https://discord.gg/R3CQkFdRtf"><img src="https://img.shields.io/badge/Discord-join%20the%20server-5865F2?logo=discord&logoColor=white" alt="Join the Discord"></a></p>
 
-# OCTA-CAPTURE Rosetta OS: the Roland OCTA-CAPTURE mod (custom firmware, boot screen, channel strip in progress)
+# OCTA-CAPTURE Rosetta OS: the Roland OCTA-CAPTURE mod (custom firmware, channel strip DSP, Rosetta Octa Control app)
 
 A free custom-firmware project for the **Roland OCTA-CAPTURE (UA-1010)** USB audio interface, also written Octa Capture or OctaCapture.
-Step one works on real hardware: the **Rosetta boot screen**, flashed with Roland's own updater.
-Next up is a per-channel **channel strip** (high-pass, EQ, comp) on all 8 mic inputs.
+It runs on real hardware: the **Rosetta boot screen**, a per-channel **channel strip** (HPF, tube, 3-band EQ, comp)
+running on the unit's own DSP, new LCD pages, and **Rosetta Octa Control**, a PC editor that replaces Roland's Control Panel.
 Landing page: [yuyoi.github.io/octa-capture-rosetta-OS](https://yuyoi.github.io/octa-capture-rosetta-OS/).
 
 **What's inside the OCTA-CAPTURE.** One Analog Devices **Blackfin** DSP (a BF52x) runs everything in software:
@@ -27,6 +27,25 @@ It also gives you tools to unpack it, patch it and pack it back. Everything is b
 > Part of the Rosetta line: [D-110](https://github.com/yuyoi/D110-rosetta-OS-v11), [S2000](https://github.com/yuyoi/Akai-S2000-Rosetta-OS), [SP-808](https://github.com/yuyoi/Sp-808-rosetta-looper-OS-) and more.
 > Questions, hardware reports and ideas: **[Discord](https://discord.gg/R3CQkFdRtf)**.
 
+## Rosetta Octa Control (PC app)
+
+<img src="docs/img/rosetta_octa_control_icon.png" width="96" align="right" alt="Rosetta Octa Control app icon: glowing blue tube on a dark panel, Game Boy Advance screen look">
+
+<p align="center"><img src="docs/img/rosetta_octa_control.png" width="900" alt="Rosetta Octa Control: dark front-panel style editor for the OCTA-CAPTURE with named inputs, EQ curve, tube and compressor"></p>
+
+A PC editor for the OCTA-CAPTURE running Rosetta OS, styled after the unit's front panel (black, silver rim, blue-lit buttons):
+- **Named inputs with pictures:** VOCAL, GUITAR, KICK ... with built-in stickers or your own PNG (double-click an input).
+- **EQ you drag:** HPF, low shelf, peak, high shelf, drawn with the exact maths the unit's DSP runs.
+- **Tube** (glows brighter with DRIVE) and **compressor** with the unit's real gain-reduction meter.
+- **Preamp gain + 48V** through Roland's own protocol (decoded in [re/CTRL_PROTOCOL.md](re/CTRL_PROTOCOL.md)), live input meters.
+- Mixer, routing and reverb pages are next.
+
+Run: `python app/rosetta_control.py` (Python 3, `PySide6`, `mido`, `python-rtmidi`; close Roland's Control Panel first).
+It needs a Rosetta lab build on the unit. `--demo` runs it without a unit.
+
+<p align="center"><img src="docs/img/channel_before_after.png" width="760" alt="OCTA-CAPTURE Channel page before (Roland stock) and after (Rosetta knob page), real LCD screenshots"></p>
+<p align="center"><i>The unit's own Channel page, before and after: pixel-exact grabs of its screen memory.</i></p>
+
 ## Status
 
 | Feature | Status |
@@ -34,12 +53,16 @@ It also gives you tools to unpack it, patch it and pack it back. Everything is b
 | **Rosetta boot screen**: Hex Girl peeking over ROSETTA, 128x64, with the boot bar along the bottom | ✅ on hardware, two units |
 | **Update-file tools**: unpack, pack, checksum fix (`octa_fw.py`) | ✅ on hardware (the boot screen was flashed with them) |
 | **One-command build** from Roland's v1.51 zip (`tools/build_rosetta.py`) | ✅ rebuilds the tested file byte for byte |
-| **CPU-load meter** on the LCD: how much DSP is free | 🔜 next |
-| **Channel strip** on all 8 mic channels, each with its own settings: gain → high-pass → gate → 4-band EQ → comp, with presets (Vocal, Kick, Guitar amp ...) | 🚧 planned |
+| **Lab backend**: read, write and run code on the live unit over USB-MIDI, no reflash per experiment (`tools/octa_lab.py`, [docs/LAB.md](docs/LAB.md)) | ✅ on hardware |
+| **CPU-load meter**: how much DSP is free | ✅ on hardware (stock load ~39 %) |
+| **Channel strip** on all 8 inputs, own settings each: gain → HPF → tube → low/peak/high EQ → comp → limiter ([docs/STRIP.md](docs/STRIP.md)) | ✅ on hardware (test builds), measured by loopback |
+| **STRIP page** on the LCD (replaces AUTO-SENS) and the **Rosetta Channel page** (knob, big gain in dB, VU) | ✅ on hardware (test builds) |
+| **Rosetta Octa Control** PC app: strip editor, named inputs, preamp gain/48V, meters | ✅ on hardware (v1) |
+| **Gate**, presets, settings that survive power-off, mixer/routing pages in the app | 🚧 next |
 | **Solo mode**: fewer active channels, more DSP each (multiband comp, de-esser, delay) | 🚧 planned |
 | **Clip guard** in place of AUTO-SENS: preamp gain steps down near clipping and the same gain is added back digitally, so the monitor level stays put | 🚧 planned |
 
-Only the ✅ rows have run on a real unit. See [ROADMAP.md](ROADMAP.md).
+Only the ✅ rows have run on a real unit. The one-command build below still makes the boot-screen release; the strip runs on the lab test builds for now. See [ROADMAP.md](ROADMAP.md).
 
 ## Build and flash
 
