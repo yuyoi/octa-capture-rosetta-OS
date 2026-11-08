@@ -1,7 +1,7 @@
-"""Measure the clock drift between two OCTA-CAPTUREs running as separate devices (VS EXPAND off, no coax).
-Opens one input on each unit at the same time (WASAPI shared), counts the frames each delivers against the PC clock,
-and prints each unit's real rate and the difference in ppm / samples per minute.
-python -I tools/dual_drift.py [seconds]"""
+"""Two OCTA-CAPTUREs as separate devices (VS EXPAND off, no coax, each on its own USB controller):
+stream one input of each at the same time and measure each unit's true sample rate against the PC clock
+(least-squares fit over every callback), then the drift between the two units.
+python -I tools/dual_drift.py [seconds]      (default 60)"""
 import sys
 import threading
 import time
@@ -9,55 +9,56 @@ import time
 import sounddevice as sd
 
 
-def find(tag):
+def find():
+    devs = {}
     for i, d in enumerate(sd.query_devices()):
-        if d['max_input_channels'] >= 2 and 'WASAPI' in sd.query_hostapis(d['hostapi'])['name'] \
-                and d['name'].startswith('1-2 (' + tag):
-            return i
-    raise SystemExit(f'no WASAPI input "1-2 ({tag}..." found')
+        if d['max_input_channels'] and 'WASAPI' in sd.query_hostapis(d['hostapi'])['name'] \
+                and d['name'].startswith('1-2 (') and 'OCTA' in d['name']:
+            devs['unit 2' if '(3-' in d['name'] or '(2-' in d['name'] else 'unit 1'] = i
+    if len(devs) != 2:
+        raise SystemExit(f'need both units as separate WASAPI devices, found {devs}')
+    return devs
+
+
+def fit(pts):
+    n = len(pts)
+    mt = sum(t for t, _ in pts) / n
+    mc = sum(c for _, c in pts) / n
+    sxx = sum((t - mt) ** 2 for t, _ in pts)
+    return sum((t - mt) * (c - mc) for t, c in pts) / sxx
 
 
 def main():
-    secs = float(sys.argv[1]) if len(sys.argv) > 1 else 30
-    devs = {'unit 1': find('OCTA-CAPTURE)'), 'unit 2': find('3- OCTA-CAPTURE')}
-    count = {k: 0 for k in devs}
-    flags = {k: 0 for k in devs}
-    first = {}
+    secs = float(sys.argv[1]) if len(sys.argv) > 1 else 60
+    devs = find()
+    pts = {k: [] for k in devs}
+    cnt = {k: 0 for k in devs}
     lock = threading.Lock()
+    t_start = [None]
 
-    def cb_for(k):
+    def mk(k):
         def cb(indata, frames, t, status):
             now = time.perf_counter()
-            if status:
-                flags[k] += 1
             with lock:
-                if k not in first:
-                    first[k] = (now, 0)
-                count[k] += frames
+                cnt[k] += frames
+                if t_start[0] is not None:
+                    pts[k].append((now - t_start[0], cnt[k]))
         return cb
-    streams = []
-    for k, i in devs.items():
-        fs = sd.query_devices(i)['default_samplerate']
-        s = sd.InputStream(device=i, channels=2, samplerate=fs, callback=cb_for(k), blocksize=2048, latency='high')
-        streams.append((k, s, fs))
-    for _, s, _ in streams:
+    ss = [sd.InputStream(device=i, channels=2, samplerate=44100, callback=mk(k)) for k, i in devs.items()]
+    for s in ss:
         s.start()
-    time.sleep(2)                                   # let both settle, then measure
-    with lock:
-        t0, c0 = time.perf_counter(), dict(count)
+    time.sleep(2)
+    t_start[0] = time.perf_counter()
     time.sleep(secs)
-    with lock:
-        t1, c1 = time.perf_counter(), dict(count)
-    for _, s, _ in streams:
+    for s in ss:
         s.stop()
         s.close()
-    rates = {}
-    for k, _, fs in streams:
-        rates[k] = (c1[k] - c0[k]) / (t1 - t0)
-        print(f'{k}: nominal {fs:.0f} Hz, measured {rates[k]:.2f} Hz against the PC clock, {flags[k]} glitch flags')
-    d = rates['unit 2'] - rates['unit 1']
-    ppm = d / rates['unit 1'] * 1e6
-    print(f'difference: {d:+.3f} samples/s = {ppm:+.1f} ppm = {d * 60:+.0f} samples per minute ({abs(d) * 60 / rates["unit 1"] * 1000:.1f} ms/min)')
+    r = {k: fit(v) for k, v in pts.items()}
+    for k in sorted(r):
+        print(f'{k}: {r[k]:.3f} Hz ({(r[k] / 44100 - 1) * 1e6:+.1f} ppm vs the PC clock), {len(pts[k])} callbacks')
+    d = r['unit 2'] - r['unit 1']
+    print(f'drift unit 2 vs unit 1: {d:+.3f} samples/s = {d / r["unit 1"] * 1e6:+.1f} ppm '
+          f'= {d * 60:+.0f} samples/min = {d * 60 / 44.1:+.1f} ms/min')
 
 
 if __name__ == '__main__':
