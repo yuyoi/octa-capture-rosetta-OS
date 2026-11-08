@@ -95,7 +95,9 @@ class Lab:
         ins = [p for p in mido.get_input_names() if 'CTRL' in p and 'OCTA' in p]
         if len(outs) <= unit or len(ins) <= unit:
             raise SystemExit(f'no OCTA-CAPTURE CTRL port #{unit}. Ports: {mido.get_output_names()}')
-        order = lambda p: ('EXP' in p, p)       # VS EXPAND: the second unit names itself OCTA-CAPTURE EXP -> unit 1
+        # unit 0 = the plain 'CTRL (OCTA-CAPTURE)'; the second unit is 'CTRL (EXP OCTA-CAPTURE)' (VS EXPAND) or
+        # '3- CTRL (OCTA-CAPTURE)' (Windows numbers a second identical device) -> unit 1
+        order = lambda p: ('EXP' in p or p[:1].isdigit(), p)
         self.out = mido.open_output(sorted(outs, key=order)[unit])
         self.inp = mido.open_input(sorted(ins, key=order)[unit])
         self.seq = 0
