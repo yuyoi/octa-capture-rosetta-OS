@@ -44,6 +44,12 @@ Per mic channel, all 8, each with its own settings:
 - **Wave analysis** on the page: scope of the input, or a coarse spectrum (8-16 bands from a filter bank).
 - **Rosetta-style Channel (gain) page:** own Draw for screen 2 (same vtable trick), "GAIN" instead of "SENS"
   (label already renamed live: string 0x41c7a0; bake into the flash build).
+- **Hi-Z in a menu (user, 2026-11-08):** the knob Channel page (strip6) has no Hi-Z. The user rarely goes direct, so it
+  belongs in a menu somewhere, not on the page. Do this before unit 1 moves from strip5 to strip6. Not urgent.
+
+## Ideas (user, 2026-11-08)
+- **Guitar amp section:** an input mode that replaces the strip's tube/comp with preamp stages, a tone stack and a speaker curve, in the firmware so it monitors with no PC delay. Speaker as a few biquads; a real impulse response needs a CPU check first.
+- **Mic compensation mode:** add a mic's published response graph on the PC, fit it with biquads, and correct towards flat or towards another mic's curve. The fit is PC-only; more than the strip's current EQ bands needs firmware. Published graphs are averages, on-axis, so it's a tone shaping tool, not exact correction. User's mics added once it works (e935 first).
 
 ## Later
 - A delay per channel. Costs memory, not CPU: about 384 KB per second at 96 kHz. Find the RAM size first.

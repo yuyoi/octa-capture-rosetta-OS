@@ -59,6 +59,9 @@ Both units on WinUSB (Zadig; serials ISRL89F2C5C5, ISRL91AA2FC4). Tools: `dual/b
 - So sample counts per USB tick + each controller's frame clock (WinUsb_GetCurrentFrameNumber, 8-23 us residual) give the
   exact relation between the boxes. Next: playback (implicit feedback), then the engine under the ASIO driver.
 
+## Fourth round: libusbK and playback (2026-11-08)
+WinUSB always fills isochronous OUT packets to the endpoint's maximum (212 bytes here), so playback crackled. libusbK (`dual/src/win/kbox.cpp`, static, `dual/build_octarec.cmd`) gives each packet its own size. octarec runs boxes on either driver, and the first box on libusbK plays. Details and numbers: [MONITORING.md](MONITORING.md). `dual/tests/asiocap.cpp` is a small ASIO meter for checking any interface.
+
 ## Linux and macOS
 - **The core (`dual/src/core`) is plain C++17 with no OS code.** The Linux/macOS front ends reuse it.
 - **Linux (plan):** PipeWire already does what Rosetta Dual does: it resamples a follower device onto the driver's

@@ -37,6 +37,14 @@ PRESETS = {
     'guitar': dict(on=_ALL, track=('Guitar', 'guitar'), hpf_f=80.0, low_f=200.0, low_g=-2.0, peak_f=2500.0, peak_g=2.0, peak_q=1.0,
                    high_f=7000.0, high_g=-3.0, drive=12.0, bias=0.30, tube_out=0.0, thresh=-20.0, ratio=4.0, attack=20.0,
                    release=150.0, makeup=3.0),
+    # Sennheiser e935: dynamic with its own presence lift, so the mud comes out and the top stays nearly alone
+    'e935': dict(on=_ALL, track=('Vocal', 'vocal'), hpf_f=100.0, low_f=250.0, low_g=-2.0, peak_f=400.0, peak_g=-2.5, peak_q=1.2,
+                 high_f=11000.0, high_g=1.5, drive=3.0, bias=0.15, tube_out=0.0, thresh=-20.0, ratio=3.0, attack=8.0,
+                 release=110.0, makeup=3.0),
+    # Les Paul bridge humbucker, direct: tame the 3 kHz bite, roll the top off like a speaker would, soft tube, slow comp
+    'lespaul': dict(on=_ALL, track=('Guitar', 'guitar'), hpf_f=80.0, low_f=200.0, low_g=-1.0, peak_f=3200.0, peak_g=-3.0, peak_q=1.4,
+                    high_f=6000.0, high_g=-6.0, drive=10.0, bias=0.30, tube_out=0.0, thresh=-22.0, ratio=3.0, attack=25.0,
+                    release=180.0, makeup=4.0),
     'flat': dict(on=()),
 }
 
@@ -729,6 +737,7 @@ class Header(QWidget):
 
 class StripPage(QWidget):
     preset = Signal(str)
+    amp = Signal(str)
 
     def __init__(self, chans, parent=None):
         super().__init__(parent)
@@ -751,6 +760,12 @@ class StripPage(QWidget):
             b = BlueButton(name.upper(), w=74, h=30)
             b.toggled.connect(lambda _, n=name, btn=b: (setattr(btn, 'checked', False), btn.update(), self.preset.emit(n)))
             blocks.addWidget(b)
+        self.amp_btn = QPushButton('AMP OFF')            # click = next amp voice for the shown input
+        self.amp_btn.setFixedSize(112, 30)
+        self.amp_btn.setStyleSheet('QPushButton{color:#c9ced4;background:#2a2d31;border:1px solid #4a4f55;border-radius:4px;'
+                                   'font:bold 11px "Segoe UI";}')
+        self.amp_btn.clicked.connect(self.next_amp)
+        blocks.addWidget(self.amp_btn)
         root.addLayout(blocks)
         mid = QHBoxLayout()
         mid.setSpacing(10)
@@ -900,11 +915,17 @@ class StripPage(QWidget):
         self.tube.glow = (0.35 + 0.65 * c['drive'] / 24) if c['on']['tube'] else 0.0
         self.tube.update()
 
+    def next_amp(self):
+        voices = ('off', 'clean', 'crunch', 'lead', 'cranked')
+        cur = self.chans[self.ch].get('amp', 'off')
+        self.amp.emit(voices[(voices.index(cur) + 1) % len(voices)])
+
     def show_chan(self, k):
         self.ch = k
         if self.link:
             self.link.watch = k
         c = self.chans[k]
+        self.amp_btn.setText('AMP ' + c.get('amp', 'off').upper())
         self.gain.val = c['pre_gain']
         self.gain.update()
         self.b48.checked = c['ph48']
@@ -1011,6 +1032,13 @@ class Main(QWidget):
         self.rec_info = QLabel('')
         self.rec_info.setStyleSheet('color:#c9ced4;font:bold 12px "Segoe UI";')
         pages.addWidget(self.rec_info)
+        self.mon = QPushButton('MONITOR OTHER BOX')              # the other box's inputs in this box's outputs, over USB
+        self.mon.setCheckable(True)
+        self.mon.setStyleSheet('QPushButton{color:#c9ced4;background:#2a2d31;border:1px solid #4a4f55;border-radius:4px;'
+                               'padding:6px 10px;font:bold 11px "Segoe UI";}'
+                               'QPushButton:checked{color:#fff;background:#1f6fd0;border-color:#6fb0ff;}')
+        self.mon.toggled.connect(lambda on: self.engine and self.engine.monitor(on))
+        pages.addWidget(self.mon)
         self.rec = RecButton()
         self.rec.clicked.connect(self.toggle_rec)
         pages.addWidget(self.rec)
@@ -1044,6 +1072,8 @@ class Main(QWidget):
             self.engine = Engine()
             self.engine.ready.connect(self.on_engine_ready)
             self.engine.meters.connect(lambda box, db: box == self.cur and self.on_meters(db, 0.0))
+            self.usb_m = {}
+            self.engine.meters.connect(lambda box, db: self.usb_m.__setitem__(box, db))
             self.engine.started.connect(self.on_rec_started)
             self.engine.done.connect(self.finish_take)
             self.engine.error.connect(lambda t: self.rec_info.setText('ENGINE: ' + t))
@@ -1051,6 +1081,7 @@ class Main(QWidget):
         self.rec_timer = QTimer(self)
         self.rec_timer.timeout.connect(self.rec_tick)
         self.strip.preset.connect(lambda name: self.apply_preset(self.cur, self.strip.ch, name))
+        self.strip.amp.connect(lambda v: self.set_amp(self.cur, self.strip.ch, v))
         self.do_timer = QTimer(self)
         self.do_timer.timeout.connect(self.poll_do)
         self.do_timer.start(300)
@@ -1081,6 +1112,23 @@ class Main(QWidget):
         if unit == self.cur:
             self.strip.show_chan(self.strip.ch)
         self.retitle()
+
+    def set_amp(self, unit, ch, voice):
+        """one amp per box: turning it on here takes it off the box's other inputs in this app's state"""
+        u = self.units[unit]
+        for k, c in enumerate(u['chans']):
+            if k != ch and c.get('amp', 'off') != 'off':
+                c['amp'] = 'off'
+                if u['link']:
+                    u['link'].set_amp(k, 'off')
+        c = u['chans'][ch]
+        c['amp'] = voice
+        if voice != 'off':
+            c['on'].update(tube=False, comp=False)
+        if u['link']:
+            u['link'].set_amp(ch, voice)
+        if unit == self.cur:
+            self.strip.show_chan(self.strip.ch)
 
     def do_log(self, s):
         with open(os.path.join(HERE, 'do.out'), 'a', encoding='utf-8') as f:
@@ -1113,6 +1161,87 @@ class Main(QWidget):
                         self.do_log(f'unit {k + 1}: Channel page = {"Roland (has Hi-Z)" if v == 0x310418 else "knob"}, '
                                     f'input 1 gain {g / 2} dB, strip flags ch1 {L.strip.flags(0)}')
                     L.send(('who', i), ask)
+            elif a[:1] == ['call'] and len(a) == 6:                  # call <unit> <addr> <r0> <r1> <r2> (hex): firmware getter
+                L = self.units[int(a[1]) - 1]['link']
+
+                def do_call(L=L, x=tuple(a)):
+                    self.do_log(' '.join(x) + ' -> %#x' % L.lab.call(*[int(v, 16) for v in x[2:]])[0])
+                L.send(('do', ln), do_call)
+            elif a[:1] == ['peek'] and len(a) == 4:                  # peek <unit> <addr> <bytes> (hex)
+                L = self.units[int(a[1]) - 1]['link']
+
+                def do_peek(L=L, x=tuple(a)):
+                    self.do_log(' '.join(x) + ' -> ' + L.lab.peek(int(x[2], 16), int(x[3], 16), 4).hex())
+                L.send(('do', ln), do_peek)
+            elif a[:1] == ['shot'] and len(a) == 2:                  # shot <path.png>: picture of this window
+                self.grab().save(a[1])
+                self.do_log('ok ' + ln)
+            elif a[:1] == ['rec']:                                   # same as tapping the red button
+                self.toggle_rec()
+                self.do_log(f'rec -> recording={self.recording} {self.take_dir}')
+            elif a[:1] == ['amp'] and len(a) == 4:                   # amp <unit> <input> <off|clean|crunch|lead|cranked>
+                self.set_amp(int(a[1]) - 1, int(a[2]) - 1, a[3])
+                self.do_log('ok ' + ln)
+            elif a[:1] == ['mon'] and len(a) == 2 and self.engine:
+                self.mon.setChecked(a[1] == '1')
+                self.do_log('ok ' + ln)
+            elif a[:1] == ['state'] and len(a) == 2:
+                self.do_state(int(a[1]) - 1)
+            elif a[:1] == ['dt1'] and len(a) == 4:                    # dt1 <unit> <addr hex, 4 bytes> <data hex>
+                L = self.units[int(a[1]) - 1]['link']
+                L.send(('do', ln), lambda L=L, x=tuple(a): L._dt1(bytes.fromhex(x[2]), bytes.fromhex(x[3])))
+                self.do_log('ok ' + ln)
+
+    def do_state(self, unit):
+        """everything between a jack and the headphones, for one box: input peaks over 1 s (at the ADC and on USB,
+        which is after the strip), preamp, direct mix A-D, patchbay"""
+        import mido
+        L = self.units[unit]['link']
+        if not L or not L.lab:
+            self.do_log(f'unit {unit + 1}: link not up')
+            return
+
+        got = {}
+
+        def dump():                                 # the firmware only answers the bulk RQ1, as a run of DT1s
+            L.lab.out.send(mido.Message('sysex', data=[0x41, 0x10, 0, 0, 0x4D, 0x11, 1, 0, 0, 0, 0, 0, 8, 0x7A, 0x7D]))
+            end = time.time() + 2.0
+            while time.time() < end:
+                for m in L.lab.inp.iter_pending():
+                    d = tuple(m.data)
+                    if d[:6] == (0x41, 0x10, 0, 0, 0x4D, 0x12):
+                        got[d[6:10]] = list(d[10:-1])
+                time.sleep(0.005)
+
+        def rq(addr, size):
+            return got.get(tuple(addr))
+
+        def nibs(v):
+            return 'none' if v is None else '%06x' % sum(x << (4 * (len(v) - 1 - k)) for k, x in enumerate(v))
+
+        def ask():
+            adc, usb = [-120.0] * 8, [-120.0] * 10
+            for _ in range(40):
+                v = struct.unpack('<8I', L.lab.peek(0x43ed10, 32, 4))
+                adc = [max(p, 20 * math.log10(x / (1 << 27)) if x > 0 else -120.0) for p, x in zip(adc, v)]
+                usb = [max(p, x) for p, x in zip(usb, self.usb_m.get(unit, usb))]
+                time.sleep(0.025)
+            log = lambda s: self.do_log(f'unit {unit + 1}: {s}')
+            dump()
+            log(f'dump: {len(got)} values')
+            log('adc peak dB ' + ' '.join('%.0f' % x for x in adc))
+            log('usb peak dB ' + ' '.join('%.0f' % x for x in usb))
+            for c in (0, 1):
+                log(f'input {c + 1} 48V {rq([0, 5, c, 0], 1)} hiz {rq([0, 5, c, 3], 1)} sens {rq([0, 5, c, 4], 1)}')
+            log(f'strip flags ch1 {L.strip.flags(0)}')
+            for m in range(4):
+                log(f'mix {"ABCD"[m]} in1 mute {rq([0, 6, m << 4, 3], 1)} solo {rq([0, 6, m << 4, 2], 1)} '
+                    f'fader {nibs(rq([0, 6, m << 4, 8], 6))}, master L {nibs(rq([0, 8, m << 4, 1], 6))} '
+                    f'R {nibs(rq([0, 8, (m << 4) | 1, 1], 6))}')
+            log('mix A solos ' + ' '.join(str(rq([0, 6, i, 2], 1)) for i in range(10)))
+            log('mix A mutes ' + ' '.join(str(rq([0, 6, i, 3], 1)) for i in range(10)))
+            log('output sources (0-3 = mix A-D, 4+ = DAW) ' + ' '.join(str(rq([0, 3, 0, p], 1)) for p in range(5)))
+        L.send(('state', unit), ask)
 
     # ---------------- one-tap recorder (boxes on WinUSB, see octa_engine.py) ----------------
     def free_text(self):

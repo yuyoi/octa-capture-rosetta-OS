@@ -40,6 +40,9 @@ A PC editor for the OCTA-CAPTURE running Rosetta OS, styled after the unit's fro
 - **Preamp gain + 48V** through Roland's own protocol (decoded in [re/CTRL_PROTOCOL.md](re/CTRL_PROTOCOL.md)), live input meters.
 - Mixer, routing and reverb pages are next.
 
+- **One-tap REC** and ready-made chains (VOCAL, GUITAR, FLAT).
+- **MONITOR OTHER BOX** and **AMP** buttons. Monitoring two boxes is its own topic, because anything through the PC has delay: [docs/MONITORING.md](docs/MONITORING.md). How the amp works: [docs/AMP.md](docs/AMP.md).
+
 Run: `python app/rosetta_control.py` (Python 3, `PySide6`, `mido`, `python-rtmidi`; close Roland's Control Panel first).
 It needs a Rosetta lab build on the unit. `--demo` runs it without a unit.
 
@@ -58,6 +61,9 @@ It needs a Rosetta lab build on the unit. `--demo` runs it without a unit.
 | **Channel strip** on all 8 inputs, own settings each: gain → HPF → tube → low/peak/high EQ → comp → limiter ([docs/STRIP.md](docs/STRIP.md)) | ✅ on hardware (test builds), measured by loopback |
 | **STRIP page** on the LCD (replaces AUTO-SENS) and the **Rosetta Channel page** (knob, big gain in dB, VU) | ✅ on hardware (test builds) |
 | **Rosetta Octa Control** PC app: strip editor, named inputs, preamp gain/48V, meters | ✅ on hardware (v1) |
+| **One-tap recorder** in the app: every input on two boxes over our own USB path, retimed onto one timeline | ✅ on hardware (sample-exact sync between boxes not yet proven) |
+| **USB monitoring** between two boxes through the PC, about 15 ms ([docs/MONITORING.md](docs/MONITORING.md)) | ✅ on hardware, needs libusbK |
+| **Guitar amp mode** in the firmware: gain stages, tone stack, speaker, no PC delay ([docs/AMP.md](docs/AMP.md)) | 🧪 built and host-tested, not on hardware yet |
 | **Gate**, presets, settings that survive power-off, mixer/routing pages in the app | 🚧 next |
 | **Solo mode**: fewer active channels, more DSP each (multiband comp, de-esser, delay) | 🚧 planned |
 | **Clip guard** in place of AUTO-SENS: preamp gain steps down near clipping and the same gain is added back digitally, so the monitor level stays put | 🚧 planned |

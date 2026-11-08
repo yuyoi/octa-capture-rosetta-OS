@@ -13,6 +13,7 @@
  * single words. Runs in the UI task. Built as an upload blob (live test) or linked into the flash build.
  */
 #include "strip.h"
+#include "page_cfg.h"
 
 typedef short s16;
 typedef unsigned short u16;
@@ -834,7 +835,7 @@ void page_install(void)
                                   0x401554, 0x40155c, 0x401564, 0x40156c, 0x40157c, 0x4015a4 }; /* screen 2 */
     const u32 fn[12] = { (u32)pg_create, (u32)pg_destroy, (u32)pg_key, (u32)pg_keyup, (u32)pg_draw, (u32)pg_enc,
                          (u32)chp_create, (u32)pg_destroy, (u32)chp_key, (u32)chp_keyup, (u32)chp_draw, (u32)chp_enc };
-    for (int i = 0; i < 12; i++)
+    for (int i = 0; i < (KNOB_CHANNEL ? 12 : 6); i++)   /* page_cfg.h: 0 = keep Roland's Channel page (it has Hi-Z) */
         *(volatile u32 *)slot[i] = fn[i];
     volatile char *lab = (volatile char *)0x41c7a0;     /* "SENS" (param 0 name, 8-byte slot) */
     if (lab[0] == 'S' && lab[1] == 'E' && lab[2] == 'N' && lab[3] == 'S' && lab[4] == 0) {

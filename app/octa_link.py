@@ -64,6 +64,16 @@ class Link(QObject):
         else:
             self.send(('blk', ch, name), lambda: self.strip.off(ch, [name]))
 
+    def set_amp(self, ch, voice):
+        def go():
+            if not self.strip.amp0:                          # older firmware: say so, don't drop the link
+                self.status.emit('this firmware has no amp yet', True)
+            elif voice == 'off':
+                self.strip.amp_off(ch)
+            else:
+                self.strip.amp(ch, voice)
+        self.send(('amp', ch), go)
+
     def set_gain(self, ch, raw):
         raw = max(0, min(100, int(raw)))
         self.send(('gain', ch), lambda: self._dt1([0x00, 0x05, ch, 0x04], [raw]))

@@ -126,6 +126,36 @@ static inline int tube(struct chan *c, int x)
     return biquad(&c->bq[4], y);        /* DC blocker (1st-order HPF ~10 Hz, set by the PC) */
 }
 
+/* ---- amp: two gain stages of the tube curve (no output gain or DC blocker of their own), then the strip's tone
+ * stack, then the speaker biquads. ---- */
+static inline int amp_stage(int x, int drive, int bias, int c0)
+{
+    int w = sadd(mulsh27(x, drive), bias);
+    if (w > ONE)
+        w = ONE;
+    else if (w < -ONE)
+        w = -ONE;
+    int w3 = mulsh27(mulsh27(w, w), w);
+    return w - mulsh27(w3, THIRD) - c0;
+}
+
+static inline int amp_gain(struct amp *a, int x)
+{
+    x = biquad(&a->bq[0], x);
+    x = amp_stage(x, a->d1, a->b1, a->c1);
+    x = biquad(&a->bq[1], x);
+    return amp_stage(x, a->d2, a->b2, a->c2);
+}
+
+static inline int amp_speaker(struct amp *a, int x)
+{
+    x = biquad(&a->bq[2], x);
+    x = biquad(&a->bq[3], x);
+    x = biquad(&a->bq[4], x);
+    x = biquad(&a->bq[5], x);
+    return mulsh27(x, a->out);
+}
+
 /* ---- comp: feed-forward, log domain, soft knee, attack/release on the gain reduction ---- */
 static inline int log2q24(int a)        /* a > 0: log2(a) in Q24 */
 {
@@ -187,8 +217,8 @@ void strip_pre(int *in)
         return;
     if (s->mb_seq != s->mb_done) {
         u32 t = s->mb_target, k = t & 15;
-        if (k < NBQ) {
-            struct bq *b = &s->ch[(t >> 4) & 7].bq[k];
+        if (k < NBQ + NAMP) {
+            struct bq *b = k < NBQ ? &s->ch[(t >> 4) & 7].bq[k] : &s->amp.bq[k - NBQ];
             b->c[0] = s->mb_c[0];
             b->c[1] = s->mb_c[1];
             b->c[2] = s->mb_c[2];
@@ -213,6 +243,9 @@ void strip_pre(int *in)
             x = biquad(&c->bq[0], x);
         if (f & F_TUBE)
             x = tube(c, x);
+        const int amp_on = (f & F_AMP) && s->amp.ch == (u32)ch;
+        if (amp_on)
+            x = amp_gain(&s->amp, x);
         if (f & F_LOW)
             x = biquad(&c->bq[1], x);
         if (f & F_PEAK)
@@ -221,6 +254,8 @@ void strip_pre(int *in)
             x = biquad(&c->bq[3], x);
         if (f & F_COMP)
             x = comp(c, x);
+        if (amp_on)
+            x = amp_speaker(&s->amp, x);
         if (f & F_GAIN)
             x = mulsh27(x, c->gout);
         if (x > OMAX - 1 || x < -OMAX) {
@@ -257,6 +292,9 @@ void strip_init(void)
         s->off[i] = offs[i];
     s->off[0] = __builtin_offsetof(struct strip, ch);
     s->off[1] = sizeof(struct bq);
+    s->off[19] = __builtin_offsetof(struct strip, amp);
+    s->amp.ch = 0xffffffffu;
+    s->amp.d1 = s->amp.d2 = s->amp.out = ONE;
     for (int ch = 0; ch < NCH; ch++) {
         s->ch[ch].gin = s->ch[ch].gout = ONE;
         s->ch[ch].drive = s->ch[ch].tout = ONE;

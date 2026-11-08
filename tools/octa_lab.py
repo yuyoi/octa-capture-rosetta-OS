@@ -235,7 +235,18 @@ def memcheck(lab):
 
 # ---- channel strip v2 (patches/strip.c, docs/STRIP.md) ----
 CCLK = 372.4e6                  # measured on hardware (meter period x 44.1 kHz)
-F = dict(hpf=1, low=2, peak=4, high=8, tube=16, comp=32, gain=64)
+F = dict(hpf=1, low=2, peak=4, high=8, tube=16, comp=32, gain=64, amp=128)
+NBQ = 5                                                          # amp biquads take mailbox slots NBQ..NBQ+5
+AMP_FIELDS = dict(ch=0, d1=4, b1=8, c1=12, d2=16, b2=20, c2=24, out=28)
+# gain = total of both stages (dB), b1/b2 = bias, tight/pre = low-cut between the stages / top cut before them (Hz),
+# res = speaker low resonance (Hz), pres = cone presence peak (dB), master = level after the speaker (dB)
+AMP_VOICES = dict(
+    clean=dict(gain=12.0, b1=0.10, b2=0.05, tight=80.0, pre=10000.0, res=95.0, pres=2.0, master=-3.0),
+    crunch=dict(gain=26.0, b1=0.25, b2=0.12, tight=120.0, pre=8000.0, res=100.0, pres=3.0, master=-3.0),
+    lead=dict(gain=40.0, b1=0.30, b2=0.15, tight=170.0, pre=6500.0, res=105.0, pres=4.0, master=-4.0),
+    # the user's favourite on the Les Paul (2026-11-08): the strip's tube at 24 dB drive, bias 0.3, as a single stage
+    cranked=dict(gain=24.0, split=1.0, b1=0.30, b2=0.0, tight=80.0, pre=12000.0, res=95.0, pres=2.0, master=-3.0),
+)
 SLOT = dict(hpf=0, low=1, peak=2, high=3, dc=4)
 FIELDS = ['flags', 'gin', 'gout', 'bq', 'drive', 'bias', 'c0', 'tout', 'thr', 'khalf', 'inv2k', 'slope',
           'atk', 'rel', 'makeup', 'g', 'grmax']
@@ -251,7 +262,10 @@ def rbj(kind, fs, f, db=0.0, q=0.7071):
     cw, sw = math.cos(w), math.sin(w)
     al = sw / (2 * q)
     A = 10 ** (db / 40)
-    if kind == 'hpf':
+    if kind == 'lpf':
+        b = [(1 - cw) / 2, 1 - cw, (1 - cw) / 2]
+        a = [1 + al, -2 * cw, 1 - al]
+    elif kind == 'hpf':
         b = [(1 + cw) / 2, -(1 + cw), (1 + cw) / 2]
         a = [1 + al, -2 * cw, 1 - al]
     elif kind == 'peak':
@@ -300,10 +314,11 @@ class Strip:
         self.lab, self._fs = lab, fs
         self.base = lab.strip_addr()
         magic, ver, nch, csize = struct.unpack('<4I', lab.peek(self.base, 16, 4))
-        if magic != 0x53545250 or ver != 2:
-            raise SystemExit(f'no strip v2 at {self.base:#x} (magic {magic:#x}, ver {ver}): needs lab >= 1.4')
+        if magic != 0x53545250 or ver not in (2, 3):
+            raise SystemExit(f'no strip v2/v3 at {self.base:#x} (magic {magic:#x}, ver {ver}): needs lab >= 1.4')
         off = struct.unpack('<20I', lab.peek(self.base + 16, 80, 4))
         self.nch, self.csize, self.ch0, self.bqsize = nch, csize, off[0], off[1]
+        self.amp0 = off[19] if ver >= 3 else 0                  # 0 = this firmware has no amp
         self.f = dict(zip(FIELDS, off[2:2 + len(FIELDS)]))
 
     @property
@@ -373,6 +388,38 @@ class Strip:
         if not on & F['comp']:
             self.wr(ch, 'g', 0, 0)
         self.set_flags(ch, on | F['comp'])
+
+    def _amp_wr(self, name, *vals):
+        self.lab.poke(self.base + self.amp0 + AMP_FIELDS[name], struct.pack(f'<{len(vals)}i', *vals), 4)
+
+    def amp(self, ch, voice='crunch', gain_db=None, master_db=None):
+        """Guitar amp on one input (one per box): replaces tube and comp there; low/peak/high become its tone stack."""
+        if not self.amp0:
+            raise SystemExit('this firmware has no amp block (needs strip v3)')
+        v = AMP_VOICES[voice]
+        gain = v['gain'] if gain_db is None else gain_db
+        if not 0 <= gain <= 46:
+            raise SystemExit('amp gain 0..46 dB')
+        master = v['master'] if master_db is None else master_db
+        fs = self.fs
+        bq = [rbj('lpf', fs, v['pre'], q=0.7071), rbj('hpf', fs, v['tight'], q=0.7071),
+              rbj('hpf', fs, v['res'], q=1.3), rbj('peak', fs, 2600.0, v['pres'], 1.1),
+              rbj('lpf', fs, 5200.0, q=0.8), rbj('lpf', fs, 7000.0, q=0.6)]
+        on = self.flags(ch)
+        fresh = not on & F['amp']
+        for i, c in enumerate(bq):
+            self.coefs(ch, NBQ + i, q30(c), reset=fresh)
+        split = v.get('split', 0.4)
+        g1, g2 = gain * split, gain * (1 - split)
+        curve = lambda b: b - b ** 3 / 3
+        self._amp_wr('d1', db2q27(g1), round(v['b1'] * Q27), round(curve(v['b1']) * Q27),
+                     db2q27(g2), round(v['b2'] * Q27), round(curve(v['b2']) * Q27), db2q27(master))
+        self._amp_wr('ch', ch)
+        self.set_flags(ch, (on | F['amp']) & ~F['tube'] & ~F['comp'])
+
+    def amp_off(self, ch):
+        self.set_flags(ch, self.flags(ch) & ~F['amp'])
+        self._amp_wr('ch', -1)
 
     def off(self, ch, names):
         for c in (range(self.nch) if ch is None else [ch]):

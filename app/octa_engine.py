@@ -91,6 +91,10 @@ class Engine(QObject):
     def stop(self):
         self._send('stop')
 
+    def monitor(self, on):
+        """the other box's inputs out of OUT 1-2 of the box on libusbK"""
+        self._send('mon 1' if on else 'mon 0')
+
     def quit(self):
         if self.p:
             self._send('quit')

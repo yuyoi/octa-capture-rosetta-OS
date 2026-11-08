@@ -31,6 +31,9 @@ The sample rate comes from the meter period (CCLK 372.4 MHz); `--fs N` overrides
   ISR never sees a half-written set. Enabling a stage zeroes its state first.
 - Block in memory: address from PING (lab >= 1.3), magic 'STRP', layout checked by the PC before writing.
 
+## Amp mode
+One guitar amp per box replaces tube and comp on one input (strip v3): see [AMP.md](AMP.md).
+
 ## Next
 - Measure the cost per stage on hardware (meter), then move the hot loop to free L1 code if needed.
 - Gate and compressor stages, presets (Vocal, Speech, Kick, ...), a Rosetta menu page per channel.

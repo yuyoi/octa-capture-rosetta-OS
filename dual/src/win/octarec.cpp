@@ -7,6 +7,7 @@
 //         stop           finish it (silent tracks are deleted)
 //         quit
 //         sx <box> <hex>  send one SysEx message to a box (lab / Roland parameter messages)
+//         mon 1|0|t      the other box's inputs out of OUT 1-2 of the box on libusbK / off / -50 dBFS test tone
 // stdout: READY <boxes> <rate> | NOBOX | M <box> <10 x peak dBFS> | REC | DONE <seconds> <dropouts> <ratio_ppm> <kept...>
 //         S <box> <hex>   SysEx from a box
 //         ERR <text>
@@ -32,6 +33,7 @@
 #include <vector>
 
 #include "core/drift.h"
+#include "kbox.h"
 
 #pragma comment(lib, "winusb.lib")
 #pragma comment(lib, "setupapi.lib")
@@ -48,6 +50,7 @@ static void say(const char *fmt, ...) {
 
 struct Dev {
     std::wstring instance, path;
+    bool libusbk = false;
 };
 
 static std::vector<Dev> find_octas() {
@@ -59,8 +62,13 @@ static std::vector<Dev> find_octas() {
         SetupDiGetDeviceRegistryPropertyW(all, &di, SPDRP_HARDWAREID, nullptr, (BYTE *)hw, sizeof hw, nullptr);
         if (!wcsstr(hw, L"VID_0582&PID_0120")) continue;
         SetupDiGetDeviceRegistryPropertyW(all, &di, SPDRP_SERVICE, nullptr, (BYTE *)svc, sizeof svc, nullptr);
-        if (_wcsicmp(svc, L"WinUSB")) continue;
+        const bool isk = !_wcsicmp(svc, L"libusbK");
+        if (_wcsicmp(svc, L"WinUSB") && !isk) continue;
         SetupDiGetDeviceInstanceIdW(all, &di, inst, 256, nullptr);
+        if (isk) {                                       // libusbK finds its devices by instance id
+            out.push_back({inst, L"", true});
+            continue;
+        }
         HKEY k = SetupDiOpenDevRegKey(all, &di, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
         if (k == INVALID_HANDLE_VALUE) continue;
         wchar_t guids[512] = {};
@@ -85,7 +93,7 @@ static std::vector<Dev> find_octas() {
             if (SetupDiGetDeviceInterfaceDetailW(h, &id, d, need, nullptr, &dd)) {
                 wchar_t inst2[256] = {};
                 SetupDiGetDeviceInstanceIdW(h, &dd, inst2, 256, nullptr);
-                if (!_wcsicmp(inst2, inst)) out.push_back({inst, d->DevicePath});
+                if (!_wcsicmp(inst2, inst)) out.push_back({inst, d->DevicePath, false});
             }
         }
         SetupDiDestroyDeviceInfoList(h);
@@ -125,8 +133,28 @@ static void wav_header(FILE *f, int rate, unsigned long long frames) {
     fwrite(&align, 2, 1, f), fwrite(&bits, 2, 1, f), fwrite("data", 1, 4, f), fwrite(&data, 4, 1, f);
 }
 
-static const int PK = 64, NX = 8, INPUTS = 10;
-static std::atomic<bool> g_quit{false}, g_rec{false};
+static const int PK = 16, NX = 32, INPUTS = 10;            // 2 ms transfers, 64 ms queued
+static const int XFERS_PER_S = 8000 / PK, OUT_CH = 10, OUT_BPF = OUT_CH * 3, OUT_PK = 8, NO = 32, OUT_LEAD = 6;   // OUT: 1 ms writes
+static std::atomic<bool> g_quit{false}, g_rec{false}, g_mon{false}, g_tone{false};
+
+static inline int s24(const BYTE *p) { return (int)((unsigned)p[0] << 8 | (unsigned)p[1] << 16 | (unsigned)p[2] << 24); }
+
+// monitor path: box 2's stream thread writes, box 1's stream thread reads
+struct MonRing {
+    static const unsigned N = 1 << 14;
+    std::atomic<unsigned> w{0}, r{0};
+    int d[N];
+    unsigned level() const { return w.load(std::memory_order_acquire) - r.load(std::memory_order_acquire); }
+    void push(int v) {
+        const unsigned p = w.load(std::memory_order_relaxed);
+        d[p & (N - 1)] = v;
+        w.store(p + 1, std::memory_order_release);
+    }
+    int peek() const { return d[r.load(std::memory_order_relaxed) & (N - 1)]; }
+    void skip(unsigned n) { r.store(r.load(std::memory_order_relaxed) + n, std::memory_order_release); }
+    void flush() { r.store(w.load(std::memory_order_acquire), std::memory_order_release); }
+};
+static MonRing g_ring;
 
 struct Block {
     std::vector<BYTE> d[INPUTS];
@@ -137,6 +165,9 @@ struct Box {
     HANDLE file = INVALID_HANDLE_VALUE;
     WINUSB_INTERFACE_HANDLE h0 = nullptr, h1 = nullptr;
     WINUSB_ISOCH_BUFFER_HANDLE bh = nullptr;
+    kb::Dev *kd = nullptr;                               // set = this box is on libusbK and is the one that plays
+    std::vector<void *> ih;                              // libusbK: one iso handle per IN transfer
+    bool is_out = false;
     ULONG per = 0, start_frame = 0;
     std::vector<BYTE> buf;
     std::vector<OVERLAPPED> ov;
@@ -162,7 +193,141 @@ struct Box {
     std::thread mt;
     std::vector<BYTE> sx[16];
 
-    bool open(const Dev &d, int alt) {
+    // playback (interface 0, iso OUT 0x05, 10 channels), libusbK only: WinUSB always fills packets to the endpoint's
+    // maximum and the box crackles. Implicit feedback: every OUT microframe carries exactly as many frames as the
+    // matching IN microframe delivered, so the box's own clock paces it, the way Roland's driver does.
+    int alt = 0;
+    std::atomic<bool> out_ready{false};
+    std::vector<BYTE> obuf;
+    std::vector<void *> oh;
+    std::vector<OVERLAPPED> oov;
+    std::vector<char> osub;
+    ULONG oslot = 0, mbpi = 0;
+    int oi = 0;
+    bool oprimed = false, orun = false;
+    double oavg = 0, ophase = 0, peak_mix = 0, ofrac = 0, orat = 1.0;
+    float ohist[32] = {};                                // rd::SincTable::TAPS
+    long long o_err = 0, o_und = 0, o_fix = 0, o_busy = 0;
+    int o_last = 0, odd = 0;
+
+    bool setup_out() {
+        if (out_ready) return true;
+        if (!kd) return false;
+        if (!kb::set_alt(kd, 0, alt)) return false;
+        mbpi = kb::mbpi(kd, 0, alt, 0x05);
+        if (!mbpi) return false;
+        say("P setup mbpi %lu\n", mbpi);
+        kb::asap(kd, 0, 0x05);
+        oslot = mbpi * OUT_PK;
+        obuf.assign((size_t)oslot * NO, 0);
+        oov.resize(NO);
+        oh.assign(NO, nullptr);
+        osub.assign(NO, 0);
+        for (int i = 0; i < NO; i++) {
+            oov[i].hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            oh[i] = kb::iso_new(kd, 0, 0x05, OUT_PK, obuf.data() + (size_t)i * oslot, oslot);
+            if (!oh[i]) return false;
+        }
+        out_ready = true;
+        return true;
+    }
+
+    // one OUT transfer (1 ms): fr[0..7] = frames for each microframe. Called from this box's stream thread.
+    void out_send(const int *fr, bool silent) {
+        OVERLAPPED &o = oov[oi];
+        if (osub[oi]) {
+            DWORD done = 0;
+            if (!kb::result(kd, 0, &o, &done, FALSE)) {
+                if (GetLastError() == ERROR_IO_INCOMPLETE) {     // this slot is still on the wire: skip, never overwrite it
+                    o_busy++;
+                    return;
+                }
+                if (o_err++ < 4) {
+                    const DWORD e = GetLastError();
+                    unsigned a = 0, l = 0, st[3] = {};
+                    for (int j = 0; j < 3; j++) kb::iso_get(oh[oi], j, &a, &l, &st[j]);
+                    say("P out failed: error %lu, packet status %x %x %x, last len %u\n", e, st[0], st[1], st[2], l);
+                }
+            }
+        }
+        BYTE *const base = obuf.data() + (size_t)oi * oslot;
+        unsigned off = 0;
+        int frames = 0;
+        for (int j = 0; j < OUT_PK; j++) {
+            const int f = std::min(fr[j], (int)(mbpi / OUT_BPF));
+            kb::iso_set(oh[oi], j, off, f * OUT_BPF);
+            off += f * OUT_BPF;
+            frames += f;
+        }
+        memset(base, 0, off);
+        const unsigned target = (unsigned)(2.5 * PK * rate / 8000);
+        const bool tone = g_tone.load(), mon = g_mon.load() && !silent && !tone;
+        unsigned lvl = mon ? g_ring.level() : 0;
+        if (!mon) orun = false;
+        if (mon && !orun && lvl >= target) {
+            orun = true, oavg = lvl, ofrac = 0, orat = 1.0;
+            memset(ohist, 0, sizeof ohist);
+        }
+        if (mon && orun) {                               // the two USB controllers differ by ~120 ppm: follow the ring's level
+            oavg += ((double)lvl - oavg) * 0.01;
+            if (lvl > MonRing::N / 2) g_ring.skip(lvl - target), lvl = target, oavg = lvl, o_fix++;
+            orat = 1.0 + std::max(-5e-4, std::min(5e-4, (oavg - target) * 6e-6));
+        }
+        static const rd::SincTable table;
+        const int T = rd::SincTable::TAPS;
+        const double step = 2 * 3.14159265358979 * 997.0 / rate;
+        BYTE *p = base;
+        for (int i = 0; i < frames; i++, p += OUT_BPF) {
+            int v = 0;
+            if (tone && !silent) {
+                v = (int)(std::sin(ophase) * 6790000.0);        // -50 dBFS
+                ophase += step;
+                if (ophase > 6.283185307179586) ophase -= 6.283185307179586;
+            } else if (mon && orun) {
+                ofrac += orat;
+                while (ofrac >= 1.0 && orun) {
+                    if (!lvl) {
+                        orun = false;
+                        o_und++;
+                        break;
+                    }
+                    memmove(ohist, ohist + 1, (T - 1) * sizeof(float));
+                    ohist[T - 1] = (float)(g_ring.peek() / 2147483648.0);
+                    g_ring.skip(1), lvl--;
+                    ofrac -= 1.0;
+                }
+                if (orun) {
+                    const double ph = ofrac * rd::SincTable::PHASES;
+                    const int p0 = (int)ph;
+                    const float a = (float)(ph - p0);
+                    const float *c0 = table.phase(p0), *c1 = table.phase(p0 + 1);
+                    float s0 = 0, s1 = 0;
+                    for (int k = 0; k < T; k++) s0 += c0[k] * ohist[k], s1 += c1[k] * ohist[k];
+                    const double y = s0 + a * (s1 - s0);
+                    v = (int)(std::max(-1.0, std::min(0.9999999, y)) * 2147483647.0);
+                }
+            }
+            for (int c = 0; c < 2; c++) p[c * 3] = (BYTE)(v >> 8), p[c * 3 + 1] = (BYTE)(v >> 16), p[c * 3 + 2] = (BYTE)(v >> 24);
+        }
+        ResetEvent(o.hEvent);
+        osub[oi] = 1;
+        o_last = frames;
+        const DWORD e = kb::iso_write(oh[oi], off, nullptr, OUT_PK, &o);     // no frame number: the pipe's ASAP policy applies
+        if (e != ERROR_IO_PENDING) {
+            if (o_err++ < 5) say("P write error %lu frames %d\n", e, frames);
+            osub[oi] = 0;
+        }
+        oi = (oi + 1) % NO;
+    }
+
+    bool open(const Dev &d, int alt_) {
+        alt = alt_;
+        const int alt = alt_;
+        if (d.libusbk) {
+            kd = kb::open(d.instance.c_str());
+            if (!kd) return false;
+            return setup(alt);
+        }
         file = CreateFileW(d.path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
         if (file == INVALID_HANDLE_VALUE || !WinUsb_Initialize(file, &h0)) return false;
@@ -176,12 +341,13 @@ struct Box {
         o.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         while (!g_quit) {
             ResetEvent(o.hEvent);
-            if (!WinUsb_ReadPipe(h2, 0x86, b, sizeof b, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) {
+            if (kd ? !kb::read_pipe(kd, 2, 0x86, b, sizeof b, &o)
+                   : !WinUsb_ReadPipe(h2, 0x86, b, sizeof b, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) {
                 Sleep(10);
                 continue;
             }
             DWORD n = 0;
-            if (!WinUsb_GetOverlappedResult(h2, &o, &n, TRUE)) {
+            if (kd ? !kb::result(kd, 2, &o, &n, TRUE) : !WinUsb_GetOverlappedResult(h2, &o, &n, TRUE)) {
                 if (!g_quit) Sleep(5);
                 continue;
             }
@@ -215,11 +381,29 @@ struct Box {
         OVERLAPPED o = {};
         o.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         DWORD n = 0;
-        if (WinUsb_WritePipe(h2, 0x06, pk.data(), (ULONG)pk.size(), nullptr, &o) || GetLastError() == ERROR_IO_PENDING)
+        if (kd) {
+            if (kb::write_pipe(kd, 2, 0x06, pk.data(), (unsigned)pk.size(), &o)) kb::result(kd, 2, &o, &n, TRUE);
+        } else if (WinUsb_WritePipe(h2, 0x06, pk.data(), (ULONG)pk.size(), nullptr, &o) || GetLastError() == ERROR_IO_PENDING) {
             WinUsb_GetOverlappedResult(h2, &o, &n, TRUE);
+        }
         CloseHandle(o.hEvent);
     }
     bool setup(int alt) {
+        if (kd) {
+            if (!kb::set_alt(kd, 1, alt)) return false;
+            per = kb::mbpi(kd, 1, alt, 0x85);
+            if (!per) return false;
+            buf.resize((size_t)per * PK * NX);
+            ov.resize(NX);
+            ih.assign(NX, nullptr);
+            pd.assign(NX, std::vector<USBD_ISO_PACKET_DESCRIPTOR>(PK));
+            for (int x = 0; x < NX; x++) {
+                ov[x].hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                ih[x] = kb::iso_new(kd, 1, 0x85, PK, buf.data() + (size_t)x * per * PK, per * PK);
+                if (!ih[x] || !kb::iso_offsets(ih[x], per)) return false;
+            }
+            return true;
+        }
         if (!WinUsb_SetCurrentAlternateSetting(h1, (UCHAR)alt)) return false;
         WINUSB_PIPE_INFORMATION_EX pi = {};
         for (UCHAR k = 0; WinUsb_QueryPipeEx(h1, (UCHAR)alt, k, &pi); k++)
@@ -232,16 +416,34 @@ struct Box {
         for (auto &o : ov) o.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         return true;
     }
+    ULONG now_frame(LARGE_INTEGER *q) {                  // USB frame number + the PC clock at that moment
+        if (!kd) {
+            ULONG cf = 0;
+            WinUsb_GetCurrentFrameNumber(h1, &cf, q);
+            return cf;
+        }
+        LARGE_INTEGER a, b;
+        unsigned cf = 0;
+        QueryPerformanceCounter(&a);
+        kb::frame(kd, 1, &cf);
+        QueryPerformanceCounter(&b);
+        q->QuadPart = (a.QuadPart + b.QuadPart) / 2;
+        return cf;
+    }
+    bool submit_in(int x, ULONG frame) {
+        if (kd) {
+            unsigned f = frame;
+            return kb::iso_read(ih[x], per * PK, &f, PK, &ov[x]) == ERROR_IO_PENDING;
+        }
+        ULONG f = frame;
+        return WinUsb_ReadIsochPipe(bh, (ULONG)((size_t)x * per * PK), per * PK, &f, PK, pd[x].data(), &ov[x]) ||
+               GetLastError() == ERROR_IO_PENDING;
+    }
     bool start() {
-        ULONG cur = 0;
         LARGE_INTEGER q;
-        WinUsb_GetCurrentFrameNumber(h1, &cur, &q);
-        start_frame = cur + 64;
-        ULONG f = start_frame;
+        start_frame = now_frame(&q) + 64;
         for (int x = 0; x < NX; x++)
-            if (!WinUsb_ReadIsochPipe(bh, (ULONG)(x * per * PK), per * PK, &f, PK, pd[x].data(), &ov[x]) &&
-                GetLastError() != ERROR_IO_PENDING)
-                return false;
+            if (!submit_in(x, start_frame + x * PK / 8)) return false;
         th = std::thread([this] { stream(); });
         wr = std::thread([this] { writer(); });
         mt = std::thread([this] { midi_rx(); });
@@ -280,7 +482,7 @@ struct Box {
         const int inputs = std::min(INPUTS, ch);
         while (!g_quit) {
             DWORD got = 0;
-            if (!WinUsb_GetOverlappedResult(h1, &ov[x], &got, TRUE)) {
+            if (kd ? !kb::result(kd, 1, &ov[x], &got, TRUE) : !WinUsb_GetOverlappedResult(h1, &ov[x], &got, TRUE)) {
                 dropouts++;
                 if (GetLastError() == ERROR_GEN_FAILURE || GetLastError() == ERROR_DEVICE_NOT_CONNECTED) {
                     say("ERR box %d disconnected\n", n + 1);
@@ -295,10 +497,32 @@ struct Box {
                 memset(peak_rec, 0, sizeof peak_rec);
             }
             auto block = recording && want ? std::make_unique<Block>() : nullptr;
+            int frames_uf[PK] = {};                      // what the box delivered per microframe: what it wants back
             for (int k = 0; k < PK; k++) {
-                const BYTE *s = buf.data() + (size_t)x * per * PK + pd[x][k].Offset;
-                int fr = (int)(pd[x][k].Length / bpf);
-                if (pd[x][k].Status) dropouts++;
+                unsigned off = 0, len = 0, st = 0;
+                if (kd) kb::iso_get(ih[x], k, &off, &len, &st);
+                else off = pd[x][k].Offset, len = pd[x][k].Length, st = pd[x][k].Status;
+                const BYTE *s = buf.data() + (size_t)x * per * PK + off;
+                int fr = (int)(len / bpf);
+                if (st) dropouts++;
+                frames_uf[k] = fr;
+                if (!is_out && g_mon) {                   // box 2's analog inputs, summed, on the way to box 1's OUT 1-2
+                    const BYTE *m = s;
+                    for (int i = 0; i < fr; i++, m += bpf) {
+                        long long sum = 0;
+                        for (int c = 0; c < std::min(8, ch); c++) sum += s24(m + c * 3);
+                        g_ring.push((int)std::max<long long>(-2147483647LL, std::min<long long>(2147483647LL, sum)));
+                    }
+                }
+                if (ch >= 12) {                          // this box's main mix (capture 11-12): shows what its outputs carry
+                    const BYTE *m = s;
+                    for (int i = 0; i < fr; i++, m += bpf) {
+                        const double a = std::fabs(s24(m + 30) / 2147483648.0);
+                        if (a > peak_mix) peak_mix = a;
+                        static FILE *const dump = getenv("RD_MIXDUMP") ? fopen(getenv("RD_MIXDUMP"), "wb") : nullptr;
+                        if (dump && is_out && out_ready) fwrite(m + 30, 1, 3, dump);     // bench test only (tests/mixcheck.py)
+                    }
+                }
                 for (int c = 0; c < inputs; c++) {
                     const BYTE *p = s + c * 3;
                     for (int i = 0; i < fr; i++, p += bpf) {
@@ -320,15 +544,34 @@ struct Box {
                 recording = false;
                 take_done = true;
             }
-            if (++xfers % 125 == 0) {                    // ~1 s: this controller's USB clock vs the PC clock
-                ULONG cf = 0;
+            {
+                int sum = 0, zero = 0;
+                for (int v : frames_uf) sum += v, zero += !v;
+                const int nom = rate * PK / 8000;
+                if ((sum < nom - 3 || sum > nom + 3) && odd++ < 40)
+                    say("P odd box %d xfer %d frames %d (expected %d) empty packets %d\n", n, xfers, sum, nom, zero);
+            }
+            if (is_out && out_ready) {
+                if (!oprimed) {                          // a few silent transfers set how far ahead of the wire we stay
+                    oprimed = true;
+                    for (int i = 0; i < OUT_LEAD; i++) out_send(frames_uf, true);
+                }
+                for (int j = 0; j + OUT_PK <= PK; j += OUT_PK) out_send(frames_uf + j, false);
+            }
+            if ((xfers + 1) % XFERS_PER_S == 0 && (is_out ? out_ready.load() : g_mon.load())) {
+                say("P box %d frames %d level %u avg %.0f und %lld fix %lld busy %lld oerr %lld in_drop %lld mix %.1f\n", n, o_last,
+                    g_ring.level(), oavg, o_und, o_fix, o_busy, o_err, dropouts, peak_mix > 1e-6 ? 20 * std::log10(peak_mix) : -120.0);
+                peak_mix = 0;
+            }
+            if (++xfers % XFERS_PER_S == 0) {            // ~1 s: this controller's USB clock vs the PC clock
                 LARGE_INTEGER q2;
-                if (WinUsb_GetCurrentFrameNumber(h1, &cf, &q2)) {
+                const ULONG cf = now_frame(&q2);
+                {
                     std::lock_guard<std::mutex> lk(sof_mu);
                     sof.push_back({(double)q2.QuadPart / freq.QuadPart, (double)cf});
                 }
             }
-            if (xfers % 8 == 0) {                        // ~15 meter updates per second
+            if (xfers % (XFERS_PER_S / 15) == 0) {       // ~15 meter updates per second
                 char line[256];
                 int o = snprintf(line, sizeof line, "M %d", n);
                 for (int c = 0; c < INPUTS; c++) {
@@ -340,9 +583,7 @@ struct Box {
             ResetEvent(ov[x].hEvent);
             ULONG f = next;
             next += PK / 8;
-            if (!WinUsb_ReadIsochPipe(bh, (ULONG)((size_t)x * per * PK), per * PK, &f, PK, pd[x].data(), &ov[x]) &&
-                GetLastError() != ERROR_IO_PENDING)
-                dropouts++;
+            if (!submit_in(x, f)) dropouts++;
             x = (x + 1) % NX;
         }
     }
@@ -497,21 +738,38 @@ int main() {
     for (size_t i = 0; i < devs.size() && i < 2; i++) {
         auto b = std::make_unique<Box>();
         b->n = (int)i;
-        HANDLE f = CreateFileW(devs[i].path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
-        WINUSB_INTERFACE_HANDLE h = nullptr;
-        if (f == INVALID_HANDLE_VALUE || !WinUsb_Initialize(f, &h)) {
-            say("ERR cannot open box %zu (error %lu)\n", i + 1, GetLastError());
-            return 1;
+        if (devs[i].libusbk) {
+            kb::Dev *k = kb::open(devs[i].instance.c_str());
+            BYTE d[4] = {};
+            if (!k || kb::control(k, 0xC0, 3, 1, 0, d, 4) != 4) {
+                say("ERR cannot open box %zu on libusbK (error %lu)\n", i + 1, GetLastError());
+                return 1;
+            }
+            const int r = d[0] | d[1] << 8 | d[2] << 16;
+            if (i == 0) rate = r;
+            else if (r != rate) {
+                BYTE w[4] = {0x40, (BYTE)rate, (BYTE)(rate >> 8), (BYTE)(rate >> 16)};
+                kb::control(k, 0x40, 3, 8, 0, w, 4);
+                Sleep(500);
+            }
+            kb::close(k);
+        } else {
+            HANDLE f = CreateFileW(devs[i].path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+            WINUSB_INTERFACE_HANDLE h = nullptr;
+            if (f == INVALID_HANDLE_VALUE || !WinUsb_Initialize(f, &h)) {
+                say("ERR cannot open box %zu (error %lu)\n", i + 1, GetLastError());
+                return 1;
+            }
+            const int r = read_rate(h);
+            if (i == 0) rate = r;
+            else if (r != rate && !set_rate(h, rate)) {
+                say("ERR box 2 will not change to %d Hz\n", rate);
+                return 1;
+            }
+            WinUsb_Free(h);
+            CloseHandle(f);
         }
-        const int r = read_rate(h);
-        if (i == 0) rate = r;
-        else if (r != rate && !set_rate(h, rate)) {
-            say("ERR box 2 will not change to %d Hz\n", rate);
-            return 1;
-        }
-        WinUsb_Free(h);
-        CloseHandle(f);
         const int alt = rate == 44100 ? 1 : rate == 48000 ? 2 : rate == 96000 ? 3 : rate == 192000 ? 4 : 0;
         if (!alt) {
             say("ERR unsupported rate %d\n", rate);
@@ -525,6 +783,14 @@ int main() {
             return 1;
         }
         boxes.push_back(std::move(b));
+    }
+    {                                                    // the first box on libusbK is the one you listen on (RD_PLAYER: bench override)
+        const int want = getenv("RD_PLAYER") ? atoi(getenv("RD_PLAYER")) : -1;
+        for (auto &b : boxes)
+            if (b->kd && (want < 0 || b->n == want)) {
+                b->is_out = true;
+                break;
+            }
     }
     for (auto &b : boxes)
         if (!b->start()) {
@@ -551,6 +817,18 @@ int main() {
                 m.push_back((BYTE)v);
             }
             if (box >= 0 && box < (int)boxes.size() && !m.empty()) boxes[box]->midi_send(m);
+        } else if (!strncmp(line, "mon ", 4)) {          // mon 1 = box 2's inputs out of box 1, mon 0 = off, mon t = test tone
+            const char m = line[4];
+            Box *player = nullptr;
+            for (auto &b : boxes)
+                if (b->is_out) player = b.get();
+            if (m != '0' && (!player || !player->setup_out())) {
+                say(player ? "ERR playback setup failed (error %lu)\n" : "ERR no box is on libusbK (error %lu)\n", GetLastError());
+                continue;
+            }
+            g_tone = m == 't';
+            if (m == '1') g_ring.flush();
+            g_mon = m != '0';
         } else if (!strcmp(line, "stop")) {
             if (g_rec) end_take(boxes);
         } else if (!strcmp(line, "quit")) {
@@ -560,15 +838,29 @@ int main() {
     if (g_rec) end_take(boxes);
     g_quit = true;
     for (auto &b : boxes) {
-        WinUsb_AbortPipe(b->h1, 0x85);
-        WinUsb_AbortPipe(b->h2, 0x86);
+        if (b->kd) {
+            kb::abort(b->kd, 1, 0x85);
+            kb::abort(b->kd, 2, 0x86);
+            if (b->out_ready) kb::abort(b->kd, 0, 0x05);
+        } else {
+            WinUsb_AbortPipe(b->h1, 0x85);
+            WinUsb_AbortPipe(b->h2, 0x86);
+        }
         { std::lock_guard<std::mutex> lk(b->mu); b->wr_stop = true; }
         b->cv.notify_all();
         if (b->th.joinable()) b->th.join();
         if (b->mt.joinable()) b->mt.join();
         if (b->wr.joinable()) b->wr.join();
-        WinUsb_UnregisterIsochBuffer(b->bh);
-        WinUsb_SetCurrentAlternateSetting(b->h1, 0);
+        if (b->kd) {
+            for (void *i : b->ih) kb::iso_free(i);
+            for (void *i : b->oh) kb::iso_free(i);
+            kb::set_alt(b->kd, 1, 0);
+            if (b->out_ready) kb::set_alt(b->kd, 0, 0);
+            kb::close(b->kd);
+        } else {
+            WinUsb_UnregisterIsochBuffer(b->bh);
+            WinUsb_SetCurrentAlternateSetting(b->h1, 0);
+        }
     }
     return 0;
 }
