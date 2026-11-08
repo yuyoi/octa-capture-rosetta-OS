@@ -101,10 +101,15 @@ bool PairStream::open(const std::wstring &id, bool capture, double fs, std::stri
         return false;
     }
     // first format the device takes in exclusive mode
-    struct Try { int bits, valid; bool flt; } tries[] = {{32, 24, false}, {24, 24, false}, {32, 32, false}, {32, 32, true}, {16, 16, false}};
+    struct Try { int bits, valid; bool flt; } tries_int[] = {{32, 24, false}, {24, 24, false}, {32, 32, false}, {32, 32, true}, {16, 16, false}},
+        tries_flt[] = {{32, 32, true}, {32, 24, false}, {24, 24, false}, {16, 16, false}, {32, 32, false}},
+        tries_16[] = {{16, 16, false}, {32, 32, true}, {32, 24, false}, {24, 24, false}, {32, 32, false}};
+    const char *fm = getenv("RD_FMT");
+    const Try *tries = fm && !strcmp(fm, "float") ? tries_flt : fm && !strcmp(fm, "16") ? tries_16 : tries_int;
     WAVEFORMATEXTENSIBLE wf = {};
     bool found = false;
-    for (const Try &t : tries) {
+    for (int ti = 0; ti < 5; ti++) {
+        const Try &t = tries[ti];
         wf = {};
         wf.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
         wf.Format.nChannels = 2;
@@ -133,7 +138,7 @@ bool PairStream::open(const std::wstring &id, bool capture, double fs, std::stri
     }
     REFERENCE_TIME def = 0, mn = 0;
     client_->GetDevicePeriod(&def, &mn);
-    REFERENCE_TIME per = mn > 0 ? mn : def;
+    REFERENCE_TIME per = getenv("RD_MINPERIOD") ? mn : def;   // default period (~10 ms): robust with many streams
     hr = client_->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, per, per,
                              (WAVEFORMATEX *)&wf, nullptr);
     if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
@@ -241,9 +246,61 @@ size_t PairStream::drain(Ring &ring) {
             std::fill(tmp_.begin(), tmp_.begin() + (size_t)frames * 2, 0.0f);
         else
             to_float(data, tmp_.data(), frames);
-        const double t_first = qpc ? qpc * 1e-7 : qpc_seconds() - frames / fs_;   // qpc: 100 ns units
-        if (first_t_ == 0) first_t_ = t_first;
-        ring.write(tmp_.data(), frames, t_first + (frames - 1) / fs_);
+        if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) glitches_++;   // we were late: the device dropped data
+        if (getenv("RD_TRACE_PKT")) {                   // log glitches and odd timing with the packets around them
+            const double tq = qpc * 1e-7, exp_t = next_t_, dt = next_t_ > 0 ? tq - exp_t : 0;
+            if (flags || std::fabs(dt) > 0.25 * buf_frames_ / fs_ || trace_n_ > 0) {
+                printf("  pkt %p: frames %u flags %lx devpos %llu (expected %llu) qpc-late %+.3f ms\n", (void *)this, frames,
+                       flags, (unsigned long long)devpos, (unsigned long long)next_pos_, dt * 1e3);
+                trace_n_ = trace_n_ > 0 ? trace_n_ - 1 : 4;
+            }
+        }
+        // Time of the packet's first frame. Roland's driver gives a QPC position, but it is not a real measurement
+        // of the unit's clock (on the second unit it runs at exactly the nominal rate; on the first it disagrees
+        // with a plain arrival count by ~70 ppm). Arrival time is noisier but honest; the clock fit averages it.
+        // RD_DEVICE_QPC=1 switches back to the device's QPC positions for comparison.
+        (void)qpc;
+        const double t_first = (getenv("RD_DEVICE_QPC") && qpc) ? qpc * 1e-7 : qpc_seconds() - frames / fs_;
+        if (first_t_ == 0) {
+            first_t_ = t_first;
+            next_pos_ = devpos;
+        }
+        // Keep sound and time on one line (the clock loop depends on it):
+        //  - data lost (device position jumped, or the packet is stamped more than half a period late): put the
+        //    missing frames in as silence;
+        //  - data repeated (after a DATA_DISCONTINUITY the device hands over one stale packet, so the next packet is
+        //    stamped a whole period "early"): drop that many frames.
+        UINT64 gap = devpos > next_pos_ ? devpos - next_pos_ : 0;
+        size_t drop = 0;
+        if (next_t_ > 0 && gap == 0) {
+            const double late = t_first - next_t_;
+            if (late > 0.5 * buf_frames_ / fs_) gap = (UINT64)std::llround(late * fs_);
+            // An "early" packet is Roland's driver catching up on the second unit (it paces that unit's packets on
+            // its own timer, then hands over an extra one): the audio is continuous, so keep every frame.
+            if (getenv("RD_DROP_EARLY") && late < -0.5 * buf_frames_ / fs_) drop = (size_t)std::llround(-late * fs_);
+        }
+        if (gap > 0 && gap < (UINT64)(fs_ * 2)) {
+            gap_frames_ += gap;
+            std::vector<float> z((size_t)std::min<UINT64>(gap, 4096) * 2, 0.0f);
+            while (gap) {
+                const size_t k = (size_t)std::min<UINT64>(gap, 4096);
+                ring.write(z.data(), k, t_first - (double)gap / fs_ + (k - 1) / fs_);
+                gap -= k;
+            }
+        }
+        next_pos_ = devpos + frames;
+        if (drop >= frames) {                            // the whole packet is a repeat: keep the timeline, skip it
+            dropped_frames_ += frames;
+            cap_->ReleaseBuffer(frames);
+            continue;                                    // next_t_ stays: this packet's time is already covered
+        }
+        if (drop) {
+            dropped_frames_ += drop;
+            ring.write(tmp_.data() + drop * 2, frames - drop, t_first + (frames - 1) / fs_);
+        } else {
+            ring.write(tmp_.data(), frames, t_first + (frames - 1) / fs_);
+        }
+        next_t_ = t_first + frames / fs_;
         cap_->ReleaseBuffer(frames);
         total += frames;
     }
@@ -254,7 +311,10 @@ void PairStream::fill(Ring &ring) {
     BYTE *d = nullptr;
     if (!ren_ || FAILED(ren_->GetBuffer(buf_frames_, &d))) return;
     if (tmp_.size() < (size_t)buf_frames_ * 2) tmp_.resize((size_t)buf_frames_ * 2);
-    const size_t have = std::min(ring.available(), (size_t)buf_frames_);
+    // start playing only once a lead of one extra buffer is queued, then hold it; count every shortfall
+    if (!playing_ && ring.available() >= (size_t)buf_frames_ * 2) playing_ = true;
+    const size_t have = playing_ ? std::min(ring.available(), (size_t)buf_frames_) : 0;
+    if (playing_ && have < buf_frames_) underflows_++, playing_ = false;
     ring.read(tmp_.data(), have);
     std::fill(tmp_.begin() + have * 2, tmp_.begin() + (size_t)buf_frames_ * 2, 0.0f);
     from_float(tmp_.data(), d, buf_frames_);
@@ -302,12 +362,14 @@ bool Unit::start(HANDLE notify) {
     for (PairStream *s : caps_)
         if (!s->start()) return false;
     th_ = std::thread([this] { run(); });
+    if (!rens_.empty()) th_out_ = std::thread([this] { run_out(); });
     return true;
 }
 
 void Unit::stop() {
     stop_ = true;
     if (th_.joinable()) th_.join();
+    if (th_out_.joinable()) th_out_.join();
     for (PairStream *s : caps_) delete s;
     for (PairStream *s : rens_) delete s;
     caps_.clear();
@@ -347,14 +409,12 @@ void Unit::merge() {
     merged_ += n;
 }
 
-void Unit::run() {
+void Unit::run() {                                     // capture thread: drain, merge, wake the engine
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     DWORD idx = 0;
     HANDLE av = AvSetMmThreadCharacteristicsW(L"Pro Audio", &idx);
     std::vector<HANDLE> hs;
     for (PairStream *s : caps_) hs.push_back(s->event());
-    for (PairStream *s : rens_) hs.push_back(s->event());
-    std::vector<float> o, pr;
     while (!stop_) {
         const DWORD w = WaitForMultipleObjects((DWORD)hs.size(), hs.data(), FALSE, 200);
         if (w == WAIT_TIMEOUT) continue;
@@ -363,34 +423,53 @@ void Unit::run() {
             caps_[k]->drain(pin_[k]);
             merge();
             if (notify_) SetEvent(notify_);
-        } else if (k - caps_.size() < rens_.size()) {
-            // split newly played-in 10-channel output onto the pairs, then serve this pair's buffer
-            const size_t n = out.available();
-            if (n) {
-                const size_t R = rens_.size();
-                o.resize(n * 2 * R);
-                pr.resize(n * 2);
-                out.read(o.data(), n);
-                for (size_t i = 0; i < R; i++) {
-                    for (size_t f = 0; f < n; f++) {
-                        pr[2 * f] = o[f * 2 * R + 2 * i];
-                        pr[2 * f + 1] = o[f * 2 * R + 2 * i + 1];
-                    }
-                    pout_[i].write(pr.data(), n, 0);
-                }
-            }
-            const size_t r = k - caps_.size();
-            rens_[r]->fill(pout_[r]);
         }
     }
     if (av) AvRevertMmThreadCharacteristics(av);
     CoUninitialize();
 }
 
+void Unit::run_out() {                                 // render thread: its own thread, so it is never starved
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    DWORD idx = 0;
+    HANDLE av = AvSetMmThreadCharacteristicsW(L"Pro Audio", &idx);
+    std::vector<HANDLE> hs;
+    for (PairStream *s : rens_) hs.push_back(s->event());
+    std::vector<float> o, pr;
+    const size_t R = rens_.size();
+    while (!stop_) {
+        const DWORD w = WaitForMultipleObjects((DWORD)hs.size(), hs.data(), FALSE, 200);
+        if (w == WAIT_TIMEOUT) continue;
+        const size_t r = w - WAIT_OBJECT_0;
+        if (r >= R) continue;
+        const size_t n = out.available();               // split new 10-channel output onto the pairs
+        if (n) {
+            o.resize(n * 2 * R);
+            pr.resize(n * 2);
+            out.read(o.data(), n);
+            for (size_t i = 0; i < R; i++) {
+                for (size_t f = 0; f < n; f++) {
+                    pr[2 * f] = o[f * 2 * R + 2 * i];
+                    pr[2 * f + 1] = o[f * 2 * R + 2 * i + 1];
+                }
+                pout_[i].write(pr.data(), n, 0);
+            }
+        }
+        rens_[r]->fill(pout_[r]);
+    }
+    if (av) AvRevertMmThreadCharacteristics(av);
+    CoUninitialize();
+}
+
 std::string Unit::status() const {
-    char b[160];
-    snprintf(b, sizeof b, "%zu in pairs, %zu out pairs, period %u frames, in ring %zu frames, overruns %zu",
-             caps_.size(), rens_.size(), (unsigned)period(), in.available(), in.overruns());
+    char b[300];
+    size_t g = 0;
+    size_t u = 0, d = 0, gp = 0;
+    for (PairStream *s : caps_) g += s->glitches(), d += (size_t)s->dropped_frames(), gp += (size_t)s->gap_frames();
+    for (PairStream *s : rens_) u += s->underflows();
+    snprintf(b, sizeof b, "%zu in / %zu out pairs, period %u, in ring %zu, overruns %zu, capture glitches %zu "
+             "(gap-filled %zu, dropped %zu frames), output underflows %zu",
+             caps_.size(), rens_.size(), (unsigned)period(), in.available(), in.overruns(), g, gp, d, u);
     return b;
 }
 

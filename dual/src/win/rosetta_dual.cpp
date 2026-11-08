@@ -232,6 +232,8 @@ public:
     }
     ASIOError stop() override {
         if (!running_ && !engine_.joinable()) return ASE_OK;
+        dlog("stop: unit 1: %s (raw short blocks %zu)", u1_.status().c_str(), raw_short_);
+        if (units_ > 1) dlog("stop: unit 2: %s", u2_.status().c_str());
         stop_ = true;
         if (ev_) SetEvent(ev_);
         if (engine_.joinable()) engine_.join();
@@ -280,16 +282,23 @@ private:
         const int C1 = u1_.channels_in(), C2 = units_ > 1 ? u2_.channels_in() : 0;
         std::vector<float> a((size_t)block_ * C1), b((size_t)block_ * std::max(C2, 1)), o((size_t)block_ * 10);
         // pace by unit 1's own clock: one block for every block_ frames unit 1 has delivered since we started
-        uint64_t base = UINT64_MAX, produced = 0;
+        uint64_t base = UINT64_MAX, produced = 0, last_f = 0;
+        rd::RateFit u1fit(60.0);                          // unit 1's clock from its hardware timestamps
         while (!stop_) {
             WaitForSingleObject(ev_, 100);
             const rd::Stamp st = u1_.in.stamp();
+            if (st.frames != last_f) {
+                u1fit.add(st.t, (double)st.frames);
+                last_f = st.frames;
+            }
             if (base == UINT64_MAX) {
                 if (st.frames == 0) continue;
                 base = st.frames;
             }
             while (!stop_ && st.frames - base >= produced + (uint64_t)block_) {
-                const double now = rd::qpc_seconds();     // jittery by ~1 ms; the follower's clock fit smooths it
+                // master time of this block = when unit 1 sampled frame (base + produced), from its timestamp
+                // fit (jitter ~15 us). Before the fit is ready: the PC clock, which only matters for start-up.
+                const double now = u1fit.ok() ? u1fit.time_of((double)(base + produced)) : rd::qpc_seconds();
                 produced += block_;
                 // one delay for both units: both start from the larger wish; if one ever re-primes larger (after
                 // a dropout), the other jumps to match so the units stay lined up
@@ -300,8 +309,14 @@ private:
                     if (f1_.primed_now() && f2_.primed_now() && std::fabs(f1_.target() - f2_.target()) > 0.5)
                         (f1_.target() < f2_.target() ? f1_ : f2_).reprime();
                 }
-                f1_.process(a.data(), block_, now);
-                if (C2) f2_.process(b.data(), block_, now);
+                if (raw_) {                               // diagnostics: no resampling, straight from the rings
+                    if (!raw_go_ && u1_.in.available() > 4096 && (!C2 || u2_.in.available() > 4096)) raw_go_ = true;
+                    if (raw_go_ && u1_.in.available() >= (size_t)block_) u1_.in.read(a.data(), block_); else std::fill(a.begin(), a.end(), 0.0f);
+                    if (C2) { if (raw_go_ && u2_.in.available() >= (size_t)block_) u2_.in.read(b.data(), block_); else std::fill(b.begin(), b.end(), 0.0f), raw_short_++; }
+                } else {
+                    f1_.process(a.data(), block_, now);
+                    if (C2) f2_.process(b.data(), block_, now);
+                }
                 const long ix = idx_;
                 for (Buf &k : bufs_) {
                     if (!k.in) continue;
@@ -372,6 +387,8 @@ private:
     HANDLE ev_ = nullptr;
     long idx_ = 0;
     uint64_t logn_ = 0;
+    bool raw_ = getenv("RD_RAW") != nullptr, raw_go_ = false;
+    size_t raw_short_ = 0;
 };
 
 // ---------------- COM / registration (ASIO SDK combase) ----------------

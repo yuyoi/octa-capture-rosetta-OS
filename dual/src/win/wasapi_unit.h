@@ -43,6 +43,7 @@ public:
     UINT32 period_frames() const { return buf_frames_; }
     double first_time() const { return first_t_; }        // capture: time of the first frame received (s)
     bool started_data() const { return first_t_ > 0; }
+    size_t glitches() const { return glitches_; }
 
 private:
     void to_float(const BYTE *src, float *dst, UINT32 n) const;
@@ -57,6 +58,18 @@ private:
     bool float_ = false;
     double fs_ = 48000, first_t_ = 0, qpc_scale_ = 1e-7;
     std::vector<float> tmp_;
+    size_t glitches_ = 0;
+    UINT64 next_pos_ = 0, gap_frames_ = 0;
+    double next_t_ = 0;
+    UINT64 dropped_frames_ = 0;
+    bool playing_ = false;
+    size_t underflows_ = 0;
+    int trace_n_ = 0;
+
+public:
+    UINT64 gap_frames() const { return gap_frames_; }
+    UINT64 dropped_frames() const { return dropped_frames_; }
+    size_t underflows() const { return underflows_; }
 };
 
 class Unit {
@@ -75,10 +88,11 @@ public:
 
 private:
     void run();
+    void run_out();
     void merge();
     std::vector<PairStream *> caps_, rens_;
     std::vector<Ring> pin_, pout_;     // per-pair stereo rings
-    std::thread th_;
+    std::thread th_, th_out_;
     std::atomic<bool> stop_{false};
     HANDLE notify_ = nullptr;
     double fs_ = 48000;

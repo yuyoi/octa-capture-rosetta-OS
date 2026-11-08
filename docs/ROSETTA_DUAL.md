@@ -14,6 +14,23 @@ Status: **Windows driver v0 runs on the two units** (2026-11-08). Measured facts
 - **Not done yet:** unit 2 outputs, the latency optimisation, an alignment test with one signal into both units
   (cable), channel names from Rosetta Octa Control, and an installer.
 
+## Findings from the cable test (2026-11-08, unit 1 OUT 4 -> unit 2 IN 1, unit 1 OUT 3 -> unit 1 IN 1)
+- **The physical clocks of the two units differ by only ~2.4 ppm** (0.1 samples/s). Measured from the audio itself:
+  noise played by unit 1 and recorded raw by both units, 85 s. **M**
+- **Unit 1's packets follow unit 1's clock.** Timestamps and frame counts are steady (jitter ~20 us). **M**
+- **Roland's driver hands over unit 2's packets on its own timer** (about the nominal 44100/s by the PC clock). It
+  catches up with an extra packet now and then.
+  - Unit 2's packet timing therefore says "-123 ppm" while its audio content runs at unit 1's rate. **M**
+  - An "early" packet is a catch-up, not a repeat: dropping it loses real audio. **M**
+  - With every frame kept, unit 2's content is continuous. **M**
+- **The 3 ms period loses data** (~16,700 discontinuities in 25 s with 10 streams). Default period (10 ms) = clean.
+  The render thread must be separate from the capture thread, or outputs starve.
+- **Consequence:** unit 2's timing cannot come from its timestamps. The ratio is tiny (ppm), but the driver's pacing
+  hides where unit 2's content is in time, by up to one packet (10 ms). Next design:
+  - Follow unit 2 by its long-term frame count (fill averaged over the catch-up cycle).
+  - Start from the ratio remembered from the last session.
+  - Optional: a calibration with a loop cable to pin the offset.
+
 ## Linux and macOS
 - **The core (`dual/src/core`) is plain C++17 with no OS code.** The Linux/macOS front ends reuse it.
 - **Linux (plan):** PipeWire already does what Rosetta Dual does: it resamples a follower device onto the driver's
