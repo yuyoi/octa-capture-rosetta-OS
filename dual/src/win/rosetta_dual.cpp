@@ -42,6 +42,42 @@ static void dlog(const char *fmt, ...) {
     }
 }
 
+// Settings shared with Rosetta Octa Control: %APPDATA%\RosettaDual\settings.ini
+//   offset_frames = <unit 2 delay trim, in frames; + = unit 2 later>   (the app's slider / the calibration)
+//   ratio = <unit 2 / unit 1 clock ratio learned last time>            (written by the driver)
+struct DualSettings {
+    double offset = 0, ratio = 1.0;
+    static std::string path() {
+        char b[MAX_PATH] = "";
+        const DWORD n = GetEnvironmentVariableA("APPDATA", b, MAX_PATH);
+        return std::string(n ? b : ".") + "\\RosettaDual\\settings.ini";
+    }
+    static uint64_t mtime() {
+        WIN32_FILE_ATTRIBUTE_DATA a;
+        if (!GetFileAttributesExA(path().c_str(), GetFileExInfoStandard, &a)) return 0;
+        return ((uint64_t)a.ftLastWriteTime.dwHighDateTime << 32) | a.ftLastWriteTime.dwLowDateTime;
+    }
+    void load() {
+        FILE *f = nullptr;
+        if (fopen_s(&f, path().c_str(), "r") || !f) return;
+        char line[128];
+        while (fgets(line, sizeof line, f)) {
+            double v;
+            if (sscanf_s(line, " offset_frames = %lf", &v) == 1) offset = v;
+            if (sscanf_s(line, " ratio = %lf", &v) == 1 && v > 0.999 && v < 1.001) ratio = v;
+        }
+        fclose(f);
+    }
+    void save() const {
+        std::string p = path();
+        CreateDirectoryA(p.substr(0, p.find_last_of('\\')).c_str(), nullptr);
+        FILE *f = nullptr;
+        if (fopen_s(&f, p.c_str(), "w") || !f) return;
+        fprintf(f, "offset_frames = %.2f\nratio = %.9f\n", offset, ratio);
+        fclose(f);
+    }
+};
+
 class RosettaDual : public IASIO, public CUnknown {
 public:
     RosettaDual(LPUNKNOWN pUnk, HRESULT *phr) : CUnknown((TCHAR *)"Rosetta Dual", pUnk, phr) {}
@@ -214,9 +250,25 @@ public:
         period1_ = u1_.period();
         rd::FollowConfig fc;
         fc.target_fill = 0;                              // grows to packet + block automatically
-        f1_.init(u1_.channels_in(), fs_, &u1_.in, fc);
-        if (units_ > 1) f2_.init(u2_.channels_in(), fs_, &u2_.in, fc);
+        fc.tau_fit = 120.0;                              // Roland's packet pacing has a slow sawtooth: average over it
+        fc.tau_hold = 20.0;
+        rd::FollowConfig fc1 = fc;
+        fc1.fixed = !getenv("RD_FIT_MODE");              // unit 1 is the clock: read it 1:1
+        f1_.init(u1_.channels_in(), fs_, &u1_.in, fc1);
+        if (units_ > 1) {
+            rd::FollowConfig fc2 = fc;
+            fc2.paced = getenv("RD_PACED") != nullptr;   // catch-up model: Roland's pacing varies, so off by default
+            fc2.level = !fc2.paced && !getenv("RD_FIT_MODE");   // default: remembered ratio + slow buffer-level nudge
+            f2_.init(u2_.channels_in(), fs_, &u2_.in, fc2);
+            f2_.set_events([this] { return u2_.take_events(); });
+            set_.load();
+            set_mtime_ = DualSettings::mtime();
+            f2_.set_prior_ratio(set_.ratio);
+            f2_.set_offset(set_.offset);
+            dlog("settings: offset %.1f frames, remembered ratio %.9f", set_.offset, set_.ratio);
+        }
         stop_ = false;
+        started_ = false;
         idx_ = 0;
         sample_pos_ = 0;
         ev_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -233,6 +285,12 @@ public:
     ASIOError stop() override {
         if (!running_ && !engine_.joinable()) return ASE_OK;
         dlog("stop: unit 1: %s (raw short blocks %zu)", u1_.status().c_str(), raw_short_);
+        if (units_ > 1 && f2_.learned_ratio() > 0) {     // remember unit 2's clock for next time
+            set_.load();
+            set_.ratio = f2_.learned_ratio();
+            set_.save();
+            dlog("stop: saved ratio %.9f (%zu catch-ups)", set_.ratio, f2_.catchups());
+        }
         if (units_ > 1) dlog("stop: unit 2: %s", u2_.status().c_str());
         stop_ = true;
         if (ev_) SetEvent(ev_);
@@ -283,7 +341,7 @@ private:
         std::vector<float> a((size_t)block_ * C1), b((size_t)block_ * std::max(C2, 1)), o((size_t)block_ * 10);
         // pace by unit 1's own clock: one block for every block_ frames unit 1 has delivered since we started
         uint64_t base = UINT64_MAX, produced = 0, last_f = 0;
-        rd::RateFit u1fit(60.0);                          // unit 1's clock from its hardware timestamps
+        rd::RateFit u1fit(120.0);                         // unit 1's clock from its packet times
         while (!stop_) {
             WaitForSingleObject(ev_, 100);
             const rd::Stamp st = u1_.in.stamp();
@@ -298,6 +356,13 @@ private:
             while (!stop_ && st.frames - base >= produced + (uint64_t)block_) {
                 // master time of this block = when unit 1 sampled frame (base + produced), from its timestamp
                 // fit (jitter ~15 us). Before the fit is ready: the PC clock, which only matters for start-up.
+                // until unit 1's clock fit is ready the followers get nothing (mixing two time bases in their fits
+                // made them swing for a minute): the host gets silent inputs for those first seconds
+                // level/fixed modes don't need the clock fit, only both units delivering
+                const bool clock_ok = getenv("RD_FIT_MODE") || getenv("RD_PACED")
+                                          ? u1fit.ok()
+                                          : (u1_.in.available() > 4096 && (!C2 || u2_.in.available() > 4096)) || started_;
+                if (clock_ok) started_ = true;
                 const double now = u1fit.ok() ? u1fit.time_of((double)(base + produced)) : rd::qpc_seconds();
                 produced += block_;
                 // one delay for both units: both start from the larger wish; if one ever re-primes larger (after
@@ -313,6 +378,9 @@ private:
                     if (!raw_go_ && u1_.in.available() > 4096 && (!C2 || u2_.in.available() > 4096)) raw_go_ = true;
                     if (raw_go_ && u1_.in.available() >= (size_t)block_) u1_.in.read(a.data(), block_); else std::fill(a.begin(), a.end(), 0.0f);
                     if (C2) { if (raw_go_ && u2_.in.available() >= (size_t)block_) u2_.in.read(b.data(), block_); else std::fill(b.begin(), b.end(), 0.0f), raw_short_++; }
+                } else if (!clock_ok) {
+                    std::fill(a.begin(), a.end(), 0.0f);
+                    std::fill(b.begin(), b.end(), 0.0f);
                 } else {
                     f1_.process(a.data(), block_, now);
                     if (C2) f2_.process(b.data(), block_, now);
@@ -358,10 +426,22 @@ private:
                 if (u1_.channels_out() == 10) u1_.out.write(o.data(), block_, now);
                 idx_ = 1 - ix;
                 delay_ = f1_.delay();
+                if (C2 && logn_ % (uint64_t)(2 * fs_ / block_) == 0) {   // live offset from the app, every ~2 s
+                    const uint64_t m = DualSettings::mtime();
+                    if (m && m != set_mtime_) {
+                        set_mtime_ = m;
+                        const double old = set_.offset;
+                        set_.load();
+                        f2_.set_offset(set_.offset);
+                        if (std::fabs(set_.offset - old) > 32) f2_.reprime();   // big move: jump, don't glide
+                        dlog("settings: offset now %.1f frames", set_.offset);
+                    }
+                }
                 if (++logn_ % (uint64_t)(2 * fs_ / block_) == 0)
-                    dlog("t %.0f s: unit 2 ratio %.7f (%+.1f ppm) fill %.1f locked %d | unit 1 ratio %.7f fill %.1f | "
-                         "underruns %zu/%zu, delay %.0f frames", produced / fs_, f2_.ratio(), (f2_.ratio() - 1) * 1e6,
-                         f2_.fill(), (int)f2_.locked(), f1_.ratio(), f1_.fill(), f1_.underruns(), f2_.underruns(), delay_);
+                    dlog("t %.0f s: unit 2 ratio %.7f (%+.1f ppm) fill %.1f catch-ups %zu learned %.7f | unit 1 ratio %.7f "
+                         "fill %.1f | underruns %zu/%zu, delay %.0f frames", produced / fs_, f2_.ratio(),
+                         (f2_.ratio() - 1) * 1e6, f2_.fill(), f2_.catchups(), f2_.learned_ratio(), f1_.ratio(), f1_.fill(),
+                         f1_.underruns(), f2_.underruns(), delay_);
             }
         }
         if (av) AvRevertMmThreadCharacteristics(av);
@@ -386,7 +466,9 @@ private:
     std::atomic<double> stamp_ns_{0};
     HANDLE ev_ = nullptr;
     long idx_ = 0;
-    uint64_t logn_ = 0;
+    uint64_t logn_ = 0, set_mtime_ = 0;
+    bool started_ = false;
+    DualSettings set_;
     bool raw_ = getenv("RD_RAW") != nullptr, raw_go_ = false;
     size_t raw_short_ = 0;
 };

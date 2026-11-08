@@ -12,6 +12,7 @@ cd /d "%~dp0"
 if not exist build mkdir build
 set CF=/nologo /O2 /EHsc /std:c++17 /W3 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS
 cl %CF% tests\test_drift.cpp /Fobuild\ /Febuild\test_drift.exe || exit /b 1
+cl %CF% tests\test_paced.cpp /Fobuild\ /Febuild\test_paced.exe || exit /b 1
 if "%1"=="test" exit /b 0
 set SDK=_sdk\ASIOSDK
 if not exist %SDK%\common\asio.h (echo ASIO SDK missing in dual\%SDK% & exit /b 1)

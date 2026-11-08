@@ -103,6 +103,17 @@ struct FollowConfig {
     double tau_hold = 8.0;       // seconds: how fast a fill error is pulled back
     double max_ppm = 300;        // sanity clamp around the measured ratio
     double tau_glide = 2.0;      // seconds: smoothing of the read speed itself
+    // paced = the source's packets are handed over on someone else's timer (Roland's driver does this for the
+    // second unit), with an extra "catch-up" packet now and then. Packet times then say nothing about where the
+    // audio really is - except at the catch-ups, which all happen at the same backlog. So the source position is
+    // pinned to the catch-ups (events), and its rate is measured between them.
+    bool paced = false;
+    // level = ignore packet times completely: run at the prior ratio and nudge it very slowly by the averaged buffer
+    // fill (tau_level seconds). The sturdy mode when a driver's packet timing can't be trusted (Roland, 2nd unit).
+    // fixed = ratio exactly 1, no correction (the clock master itself).
+    bool level = false, fixed = false;
+    double tau_level = 300.0, tau_level_avg = 30.0, max_level_ppm = 50;
+    double guess_frac = 0.5;     // before the first catch-up: assume the backlog is this fraction of a packet
 };
 
 class Follower {
@@ -118,6 +129,14 @@ public:
         sfit_ = RateFit(cfg.tau_fit);
         restart();
     }
+    using Events = std::function<std::vector<std::pair<double, uint64_t>>()>;
+    void set_events(Events e) { events_ = std::move(e); }
+    void set_offset(double frames) { offset_ = frames; }        // calibration: shifts this path's delay
+    void set_prior_ratio(double q) { prior_ = q; }               // source/master rate from last time (paced mode)
+    // measured source/master rate (paced mode, after two catch-ups), 0 = not known yet
+    double learned_ratio() const { return learned_; }
+    size_t catchups() const { return evs_.size() + ev_dropped_; }
+
     void restart() {
         head_ = 0;
         pos_ = 0;
@@ -163,11 +182,31 @@ public:
         // (jittery) callback time here would turn timestamp jitter straight into pitch wobble.
         const double t_blk = mfit_.ok() ? mfit_.time_of((double)out_total_) : t_now;
         out_total_ += n;
+        if (!primed_ && (cfg_.fixed || cfg_.level)) {    // start at the target fill (plus the trim), nothing else
+            const double want = target_ + offset_;
+            const size_t av = src_->available();
+            if (maxpkt_ == 0 || want < 0 || av < (size_t)want + T + n) {
+                std::fill(out, out + n * ch_, 0.0f);
+                return false;
+            }
+            src_->skip(av - ((size_t)want + T));
+            head_ = 0;
+            src_->read(&hist_[0], T);
+            pulled_ = src_->read_total();
+            pos_ = 0;
+            lvl_init_ = false;
+            primed_ = true;
+        }
         if (!primed_) {
             // Start only once both clocks are measured, then jump straight to the exact target: the fill is
             // measured from the clock fit, so priming from "frames available" would leave an offset that the slow
             // loop then needs minutes to crawl away (and the two units would not line up until then).
-            const double s_est = locked() ? sfit_.at(t_blk) : 0.0;
+            double s_est = 0, b_unused = 1;
+            if (locked()) {
+                if (cfg_.paced) source_paced(t_blk, st, s_est, b_unused);
+                else s_est = sfit_.at(t_blk);
+                s_est += offset_;
+            }
             const double first = s_est - target_ - T;            // frame index the window must start at
             const uint64_t rt = src_->read_total();
             if (!locked() || first < (double)rt || (double)src_->available() < first - (double)rt + T) {
@@ -182,10 +221,32 @@ public:
             pos_ = 0;
             primed_ = true;
         }
-        // where the source is now (from its clock fit), minus where we read = the true fill
-        const double s_now = sfit_.ok() ? sfit_.at(t_blk) : (double)st.frames;
+        // where the source is now, minus where we read = the true fill
+        double s_now, base;
+        if (cfg_.fixed || cfg_.level) {
+            const double av = (double)src_->available() + offset_;
+            if (!lvl_init_) lvl_avg_ = av, lvl_init_ = true;
+            const double a = 1.0 - std::exp(-(double)n / (fs_ * cfg_.tau_level_avg));
+            lvl_avg_ += a * (av - lvl_avg_);
+            fill_ = lvl_avg_;
+            if (cfg_.fixed) {
+                ratio_ = 1.0;
+            } else {
+                // proportional on the averaged fill: ratio = prior + (fill error) / (fs * tau_level), clamped
+                const double lim = cfg_.max_level_ppm * 1e-6;
+                const double corr = (lvl_avg_ - target_) / (fs_ * cfg_.tau_level);
+                ratio_ = prior_ * (1 + std::max(-lim, std::min(lim, corr)));
+            }
+            return render(out, n, table);
+        }
+        if (cfg_.paced) {
+            source_paced(t_blk, st, s_now, base);
+        } else {
+            s_now = sfit_.ok() ? sfit_.at(t_blk) : (double)st.frames;
+            base = locked() ? sfit_.rate() / mfit_.rate() : 1.0;   // RateFit::ok() needs > 5 s of data
+        }
+        s_now += offset_;
         fill_ = s_now - ((double)pulled_ + pos_);
-        const double base = locked() ? sfit_.rate() / mfit_.rate() : 1.0;   // RateFit::ok() needs > 5 s of data
         const double corr = (fill_ - target_) / (fs_ * cfg_.tau_hold);
         const double lim = cfg_.max_ppm * 1e-6;
         const double want = base * (1 + std::max(-lim, std::min(lim, corr)));
@@ -194,6 +255,11 @@ public:
         const double a = 1.0 - std::exp(-(double)n / (fs_ * cfg_.tau_glide));
         ratio_ = (ratio_ == 0 || !locked()) ? want : ratio_ + a * (want - ratio_);
 
+        return render(out, n, table);
+    }
+
+    bool render(float *out, size_t n, const SincTable &table) {
+        const int T = SincTable::TAPS;
         for (size_t i = 0; i < n; i++) {
             while (pos_ >= 1.0) {                        // slide the window one frame
                 if (src_->available() < 1) {
@@ -233,9 +299,37 @@ public:
     }
 
 private:
+    // paced source: position + rate from the catch-up events
+    void source_paced(double t, const Stamp &st, double &s_now, double &base) {
+        if (events_) {
+            for (const auto &e : events_()) {
+                if (!evs_.empty() && e.first - evs_.back().first < 1.0) continue;   // one per catch-up
+                evs_.push_back({e.first, (double)e.second});
+                if (evs_.size() > 32) evs_.erase(evs_.begin()), ev_dropped_++;
+            }
+        }
+        const double r1 = mfit_.ok() ? mfit_.rate() : fs_;
+        double r2 = r1 * prior_;
+        if (evs_.size() >= 2 && evs_.back().first - evs_.front().first > 20) {
+            r2 = (evs_.back().second - evs_.front().second) / (evs_.back().first - evs_.front().first);
+            learned_ = r2 / r1;
+        }
+        if (evs_.empty()) {
+            s_now = (sfit_.ok() ? sfit_.at(t) : (double)st.frames) + cfg_.guess_frac * maxpkt_;
+        } else {
+            s_now = evs_.back().second + r2 * (t - evs_.back().first);
+        }
+        base = r2 / r1;
+    }
+
     int ch_ = 2;
     double fs_ = 48000;
     Ring *src_ = nullptr;
+    Events events_;
+    std::vector<std::pair<double, double>> evs_;
+    size_t ev_dropped_ = 0;
+    double offset_ = 0, prior_ = 1.0, learned_ = 0, lvl_avg_ = 0;
+    bool lvl_init_ = false;
     FollowConfig cfg_;
     std::vector<float> hist_;
     size_t cap_ = 0, head_ = 0;

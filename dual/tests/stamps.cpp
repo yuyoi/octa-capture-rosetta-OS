@@ -70,6 +70,12 @@ int main(int argc, char **argv) {
             r[u].skip(r[u].available());
         }
     }
+    if (getenv("RD_DUMP")) {                             // all packets: unit, arrival time, frames total
+        FILE *fp = fopen(getenv("RD_DUMP"), "w");
+        for (int u = 0; fp && u < 2; u++)
+            for (size_t i = 0; i < t[u].size(); i++) fprintf(fp, "%d %.7f %.0f\n", u, t[u][i], f[u][i]);
+        if (fp) fclose(fp);
+    }
     Fit F[2];
     for (int u = 0; u < 2; u++) {
         // drop the first second (start-up)

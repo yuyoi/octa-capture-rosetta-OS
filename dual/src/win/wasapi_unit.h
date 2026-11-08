@@ -11,6 +11,7 @@
 #include <mmdeviceapi.h>
 
 #include <atomic>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -63,6 +64,8 @@ private:
     double next_t_ = 0;
     UINT64 dropped_frames_ = 0;
     bool playing_ = false;
+    std::mutex ev_mu_;
+    std::vector<std::pair<double, uint64_t>> events_;
     size_t underflows_ = 0;
     int trace_n_ = 0;
 
@@ -70,6 +73,8 @@ public:
     UINT64 gap_frames() const { return gap_frames_; }
     UINT64 dropped_frames() const { return dropped_frames_; }
     size_t underflows() const { return underflows_; }
+    // catch-up packets (Roland's driver handing over an extra packet early): (arrival time, frames written after)
+    std::vector<std::pair<double, uint64_t>> take_events();
 };
 
 class Unit {
@@ -85,6 +90,8 @@ public:
     int channels_out() const { return 2 * (int)rens_.size(); }
     UINT32 period() const { return caps_.empty() ? 0 : caps_[0]->period_frames(); }
     std::string status() const;
+    // catch-up events of this unit in merged-frame numbers (see PairStream::take_events)
+    std::vector<std::pair<double, uint64_t>> take_events();
 
 private:
     void run();
@@ -97,7 +104,9 @@ private:
     HANDLE notify_ = nullptr;
     double fs_ = 48000;
     bool aligned_ = false;
-    uint64_t merged_ = 0;
+    uint64_t merged_ = 0, skip0_ = 0;
+    std::mutex ev_mu_;
+    std::vector<std::pair<double, uint64_t>> events_;
     std::vector<float> mix_, pair_;
 };
 

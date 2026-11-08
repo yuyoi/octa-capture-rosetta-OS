@@ -31,6 +31,21 @@ Status: **Windows driver v0 runs on the two units** (2026-11-08). Measured facts
   - Start from the ratio remembered from the last session.
   - Optional: a calibration with a loop cable to pin the offset.
 
+## Second round (2026-11-08 evening)
+- **Catch-up model (paced mode):** perfect in simulation (`test_paced`: ratio exact, 0.03 samples wander). On the
+  hardware, Roland's pacing changes from run to run: one run has catch-ups every ~80 s on unit 2; another 300 s run
+  has both units paced with a 10 ms sawtooth and no catch-ups. So it is off by default (`RD_PACED=1`).
+- **Over minutes the frame counts are honest:** a 300 s run gives unit2/unit1 = +3.9 ppm, against +2.4 ppm measured
+  from the sound.
+- **Level mode (default now):** unit 1 is read 1:1; unit 2 runs at the remembered ratio and is nudged by its buffer
+  level averaged over minutes.
+  - Clean audio both sides, no dropouts.
+  - Alignment still slid 1.4 samples/s in the test, because of a wrong remembered ratio saved by an earlier
+    paced-mode run.
+- **Open:** even unit 1's own output -> input loop slid ~1.3 samples/s against the noise sent. So Roland's WDM
+  exclusive path itself is not sample-exact between streams. Sample-locked two-unit recording without a reference
+  signal is not possible on this driver; a loose sync (a few ms, no slow drift) is.
+
 ## Linux and macOS
 - **The core (`dual/src/core`) is plain C++17 with no OS code.** The Linux/macOS front ends reuse it.
 - **Linux (plan):** PipeWire already does what Rosetta Dual does: it resamples a follower device onto the driver's

@@ -272,9 +272,14 @@ size_t PairStream::drain(Ring &ring) {
         //    stamped a whole period "early"): drop that many frames.
         UINT64 gap = devpos > next_pos_ ? devpos - next_pos_ : 0;
         size_t drop = 0;
+        bool early = false;
         if (next_t_ > 0 && gap == 0) {
             const double late = t_first - next_t_;
-            if (late > 0.5 * buf_frames_ / fs_) gap = (UINT64)std::llround(late * fs_);
+            // a late packet only means lost audio when the device says so (the second unit's packets are paced by
+            // Roland's driver and can arrive unevenly without anything missing)
+            if ((flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) && late > 0.5 * buf_frames_ / fs_)
+                gap = (UINT64)std::llround(late * fs_);
+            early = late < -0.5 * buf_frames_ / fs_;
             // An "early" packet is Roland's driver catching up on the second unit (it paces that unit's packets on
             // its own timer, then hands over an extra one): the audio is continuous, so keep every frame.
             if (getenv("RD_DROP_EARLY") && late < -0.5 * buf_frames_ / fs_) drop = (size_t)std::llround(-late * fs_);
@@ -301,6 +306,21 @@ size_t PairStream::drain(Ring &ring) {
             ring.write(tmp_.data(), frames, t_first + (frames - 1) / fs_);
         }
         next_t_ = t_first + frames / fs_;
+        if (early && getenv("RD_LOG_EVENTS")) {
+            FILE *lf = nullptr;
+            char lp[MAX_PATH];
+            GetTempPathA(MAX_PATH, lp);
+            strcat_s(lp, "RosettaDual_events.log");
+            if (fopen_s(&lf, lp, "a") == 0 && lf) {
+                fprintf(lf, "%p %.6f %llu %.3f\n", (void *)this, next_t_, (unsigned long long)ring.stamp().frames,
+                        (t_first - (next_t_ - frames / fs_)) * 1e3);
+                fclose(lf);
+            }
+        }
+        if (early) {                                     // catch-up: remember when, and how many frames we had then
+            std::lock_guard<std::mutex> lk(ev_mu_);
+            if (events_.size() < 64) events_.push_back({next_t_, ring.stamp().frames});
+        }
         cap_->ReleaseBuffer(frames);
         total += frames;
     }
@@ -389,6 +409,7 @@ void Unit::merge() {
             if (pin_[i].available() < skip) return;      // not enough yet: try again on the next packet
         }
         for (size_t i = 0; i < P; i++) pin_[i].skip((size_t)std::lround((latest - caps_[i]->first_time()) * fs_));
+        skip0_ = (uint64_t)std::lround((latest - caps_[0]->first_time()) * fs_);
         aligned_ = true;
     }
     size_t n = SIZE_MAX;
@@ -407,6 +428,26 @@ void Unit::merge() {
     const double t = st.t - (double)(st.frames - pin_[0].read_total()) / fs_;
     in.write(mix_.data(), n, t);
     merged_ += n;
+    // catch-up events of pair 1-2, in merged-frame numbers
+    for (const auto &e : caps_[0]->take_events()) {
+        if (e.second < skip0_) continue;
+        std::lock_guard<std::mutex> lk(ev_mu_);
+        if (events_.size() < 256) events_.push_back({e.first, e.second - skip0_});
+    }
+}
+
+std::vector<std::pair<double, uint64_t>> PairStream::take_events() {
+    std::lock_guard<std::mutex> lk(ev_mu_);
+    std::vector<std::pair<double, uint64_t>> v;
+    v.swap(events_);
+    return v;
+}
+
+std::vector<std::pair<double, uint64_t>> Unit::take_events() {
+    std::lock_guard<std::mutex> lk(ev_mu_);
+    std::vector<std::pair<double, uint64_t>> v;
+    v.swap(events_);
+    return v;
 }
 
 void Unit::run() {                                     // capture thread: drain, merge, wake the engine
