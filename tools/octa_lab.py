@@ -12,7 +12,20 @@ Needs a unit running a Rosetta build with the lab backend (patches/lab1.S). Prot
   python tools/octa_lab.py check ADDR N WORD              count words != pattern, first bad address
   python tools/octa_lab.py call ADDR [R0 R1 R2]           flush I-cache over the lab code area, call, print R0
   python tools/octa_lab.py meter                          DSP load: busy / period cycles, CCLK estimate
+  python tools/octa_lab.py meter show|hide                load numbers on the LCD (lab >= 1.6: hidden by default)
   python tools/octa_lab.py chop on|off                    record-ch1 chopper (audible test)
+  python tools/octa_lab.py strip                          channel strip status (lab >= 1.4, docs/STRIP.md)
+  python tools/octa_lab.py strip gain CH IN_DB [OUT_DB]   digital in/out gain (CH = input 1-8)
+  python tools/octa_lab.py strip hpf CH FREQ [Q]          high-pass 12 dB/oct
+  python tools/octa_lab.py strip low|peak|high CH FREQ DB [Q]   shelves / peak
+  python tools/octa_lab.py strip tube CH DRIVE_DB [BIAS 0.2] [OUT_DB]   tube saturation (bias = even harmonics)
+  python tools/octa_lab.py strip comp CH [THR -18] [RATIO 4] [ATK 10] [REL 150] [KNEE 6] [MAKEUP 0]
+  python tools/octa_lab.py strip gr CH                    comp gain reduction (now / max since last read)
+  python tools/octa_lab.py strip off CH [stage] | off all
+  python tools/octa_lab.py strip selftest                 on-unit multiply tests
+  python tools/octa_lab.py page [unload]                  live STRIP page: upload patches/page.bin, hijack screen 18
+  python tools/octa_lab.py strip bqtest                   on-unit asm biquad vs the Python model (bit-exact)
+    strip options: --fs N (default: from the meter period; 44.1/48/88.2k only, 96k+ runs stock)
   python tools/octa_lab.py memprobe                       SDRAM geometry check + canaries in the free areas
   python tools/octa_lab.py memcheck                       count canary words that changed since memprobe
   python tools/octa_lab.py ports                          list MIDI ports
@@ -21,6 +34,7 @@ Options: --unit N (0 = first OCTA, 1 = second), --force (allow addresses outside
 Peek/poke outside mapped memory can crash the unit: then power-cycle it (nothing is written to flash).
 """
 import argparse
+import math
 import struct
 import sys
 import time
@@ -111,6 +125,12 @@ class Lab:
         r = self.xfer(CMD['PING'])
         ver, vars_, area = struct.unpack('>HII', r[:10])
         return ver, vars_, area
+
+    def strip_addr(self):
+        r = self.xfer(CMD['PING'])
+        if len(r) < 14:
+            raise SystemExit('this lab build has no channel strip (needs lab >= 1.3)')
+        return struct.unpack('>I', r[10:14])[0]
 
     def peek(self, a, n, w=1):
         self.guard(a, n)
@@ -206,6 +226,361 @@ def memcheck(lab):
         print(f'{name:18s} {base:#010x} +{n:#x}: {bad} words changed' + (f', first at {first:#x}' if bad else ''))
 
 
+# ---- channel strip v2 (patches/strip.c, docs/STRIP.md) ----
+CCLK = 372.4e6                  # measured on hardware (meter period x 44.1 kHz)
+F = dict(hpf=1, low=2, peak=4, high=8, tube=16, comp=32, gain=64)
+SLOT = dict(hpf=0, low=1, peak=2, high=3, dc=4)
+FIELDS = ['flags', 'gin', 'gout', 'bq', 'drive', 'bias', 'c0', 'tout', 'thr', 'khalf', 'inv2k', 'slope',
+          'atk', 'rel', 'makeup', 'g', 'grmax']
+H_CLIPS, H_SEQ, H_DONE, H_TGT, H_C = 96, 100, 104, 108, 112     # fixed header (strip.c struct strip)
+LOG2DB = 20 * 0.30102999566                                     # dB per log2 unit
+Q24, Q27, Q30 = 1 << 24, 1 << 27, 1 << 30
+
+
+def rbj(kind, fs, f, db=0.0, q=0.7071):
+    """RBJ cookbook biquad, normalised to a0 = 1: [b0, b1, b2, a1, a2] as floats."""
+    import math
+    w = 2 * math.pi * f / fs
+    cw, sw = math.cos(w), math.sin(w)
+    al = sw / (2 * q)
+    A = 10 ** (db / 40)
+    if kind == 'hpf':
+        b = [(1 + cw) / 2, -(1 + cw), (1 + cw) / 2]
+        a = [1 + al, -2 * cw, 1 - al]
+    elif kind == 'peak':
+        b = [1 + al * A, -2 * cw, 1 - al * A]
+        a = [1 + al / A, -2 * cw, 1 - al / A]
+    elif kind in ('low', 'high'):
+        s2 = 2 * math.sqrt(A) * al
+        sg = 1 if kind == 'low' else -1
+        b = [A * ((A + 1) - sg * (A - 1) * cw + s2), sg * 2 * A * ((A - 1) - sg * (A + 1) * cw),
+             A * ((A + 1) - sg * (A - 1) * cw - s2)]
+        a = [(A + 1) + sg * (A - 1) * cw + s2, -sg * 2 * ((A - 1) + sg * (A + 1) * cw),
+             (A + 1) + sg * (A - 1) * cw - s2]
+    elif kind == 'dc':                                          # 1st-order DC blocker at f
+        pz = math.exp(-2 * math.pi * f / fs)
+        return [(1 + pz) / 2, -(1 + pz) / 2, 0.0, -pz, 0.0]
+    else:
+        raise SystemExit(f'unknown stage {kind}')
+    return [b[0] / a[0], b[1] / a[0], b[2] / a[0], a[1] / a[0], a[2] / a[0]]
+
+
+def q30(coefs):
+    """[b0, b1, b2, a1, a2] floats -> the unit's Q30 b0 b1 b2 -a1 -a2."""
+    out = [round(c * Q30) for c in coefs[:3]] + [round(-coefs[3] * Q30), round(-coefs[4] * Q30)]
+    if not all(-(1 << 31) <= v < (1 << 31) for v in out):
+        raise SystemExit('a coefficient does not fit Q30 (|c| < 2): use a smaller gain or a wider Q')
+    return out
+
+
+def db2q27(db, lim=15.99):
+    g = 10 ** (db / 20)
+    if g > lim:
+        raise SystemExit(f'{db:+.1f} dB is more than this stage can do (+{20 * math.log10(lim):.1f} dB max)')
+    return round(g * Q27)
+
+
+def onepole(ms, fs):
+    import math
+    return round((1 - math.exp(-1000 / (ms * fs))) * Q30)
+
+
+
+
+class Strip:
+    """The unit's strip block, layout read from the block itself."""
+    def __init__(self, lab, fs=0):
+        self.lab, self._fs = lab, fs
+        self.base = lab.strip_addr()
+        magic, ver, nch, csize = struct.unpack('<4I', lab.peek(self.base, 16, 4))
+        if magic != 0x53545250 or ver != 2:
+            raise SystemExit(f'no strip v2 at {self.base:#x} (magic {magic:#x}, ver {ver}): needs lab >= 1.4')
+        off = struct.unpack('<20I', lab.peek(self.base + 16, 80, 4))
+        self.nch, self.csize, self.ch0, self.bqsize = nch, csize, off[0], off[1]
+        self.f = dict(zip(FIELDS, off[2:2 + len(FIELDS)]))
+
+    @property
+    def fs(self):
+        if not self._fs:
+            self._fs = strip_fs(self.lab, 0)
+        return self._fs
+
+    def addr(self, ch, field, slot=None):
+        a = self.base + self.ch0 + ch * self.csize + self.f[field]
+        return a if slot is None else a + slot * self.bqsize
+
+    def rd(self, ch, field):
+        return struct.unpack('<i', self.lab.peek(self.addr(ch, field), 4, 4))[0]
+
+    def wr(self, ch, field, *vals):
+        self.lab.poke(self.addr(ch, field), struct.pack(f'<{len(vals)}i', *vals), 4)
+
+    def flags(self, ch):
+        return self.rd(ch, 'flags') & 0xFFFFFFFF
+
+    def set_flags(self, ch, v):
+        self.lab.poke(self.addr(ch, 'flags'), struct.pack('<I', v), 4)
+
+    def coefs(self, ch, slot, c, reset):
+        """Biquad coefficients through the mailbox (the ISR copies them between two samples)."""
+        lab = self.lab
+        done = struct.unpack('<I', lab.peek(self.base + H_DONE, 4, 4))[0]
+        lab.poke(self.base + H_C, struct.pack('<5i', *c), 4)
+        lab.poke(self.base + H_TGT, struct.pack('<I', (ch << 4) | slot | (0x100 if reset else 0)), 4)
+        lab.poke(self.base + H_SEQ, struct.pack('<I', (done + 1) & 0xFFFFFFFF), 4)
+        t0 = time.time()
+        while struct.unpack('<I', lab.peek(self.base + H_DONE, 4, 4))[0] != (done + 1) & 0xFFFFFFFF:
+            if time.time() - t0 > 1:
+                raise SystemExit('the strip did not take the coefficients: is audio running at 44.1/48/88.2 kHz?')
+
+    def eq(self, ch, kind, c):
+        on = self.flags(ch)
+        self.coefs(ch, SLOT[kind], q30(c), reset=not on & F[kind])
+        self.set_flags(ch, on | F[kind])
+
+    def gain(self, ch, din, dout):
+        self.wr(ch, 'gin', db2q27(din))
+        self.wr(ch, 'gout', db2q27(dout))
+        self.set_flags(ch, self.flags(ch) | F['gain'])
+
+    def tube(self, ch, drive_db, bias, out_db):
+        drive = 10 ** (drive_db / 20)
+        if not 0 <= bias <= 0.6:
+            raise SystemExit('bias 0..0.6')
+        c0 = bias - bias ** 3 / 3
+        tout = 10 ** (out_db / 20) / (drive * (1 - bias * bias))      # small-signal gain 1 (+ out_db)
+        on = self.flags(ch)
+        self.wr(ch, 'drive', db2q27(drive_db), round(bias * Q27), round(c0 * Q27), round(min(tout, 15.99) * Q27))
+        if not on & F['tube']:
+            self.coefs(ch, SLOT['dc'], q30(rbj('dc', self.fs, 10)), reset=True)
+        self.set_flags(ch, on | F['tube'])
+
+    def comp(self, ch, thr_db, ratio, atk_ms, rel_ms, knee_db, makeup_db):
+        k = knee_db / LOG2DB
+        slope = 1 - 1 / ratio if ratio < 1000 else 1.0
+        vals = dict(thr=round(thr_db / LOG2DB * Q24), khalf=round(k / 2 * Q24),
+                    inv2k=round(Q24 / (2 * k)) if k > 0 else 0, slope=round(slope * Q30),
+                    atk=onepole(atk_ms, self.fs), rel=onepole(rel_ms, self.fs), makeup=round(makeup_db / LOG2DB * Q24))
+        on = self.flags(ch)
+        self.wr(ch, 'thr', *[vals[n] for n in ('thr', 'khalf', 'inv2k', 'slope', 'atk', 'rel', 'makeup')])
+        if not on & F['comp']:
+            self.wr(ch, 'g', 0, 0)
+        self.set_flags(ch, on | F['comp'])
+
+    def off(self, ch, names):
+        for c in (range(self.nch) if ch is None else [ch]):
+            v = self.flags(c)
+            for n in names:
+                v &= ~F[n]
+            self.set_flags(c, v)
+
+    def gr(self, ch, reset=True):
+        g, gmax = self.rd(ch, 'g'), self.rd(ch, 'grmax')
+        if reset:
+            self.wr(ch, 'grmax', 0)
+        return g / Q24 * LOG2DB, gmax / Q24 * LOG2DB
+
+    def status(self):
+        clips = struct.unpack('<I', self.lab.peek(self.base + H_CLIPS, 4, 4))[0]
+        print(f'strip v2 at {self.base:#x}, output limiter hits {clips}')
+        anyon = False
+        for ch in range(self.nch):
+            fl = self.flags(ch)
+            if not fl:
+                continue
+            anyon = True
+            parts = [n for n in ('gain', 'hpf', 'tube', 'low', 'peak', 'high', 'comp') if fl & F[n]]
+            line = f'  in {ch + 1}: ' + ' '.join(parts)
+            if fl & F['gain']:
+                line += f'  [in {20 * math.log10(self.rd(ch, "gin") / Q27 + 1e-12):+.1f} / out {20 * math.log10(self.rd(ch, "gout") / Q27 + 1e-12):+.1f} dB]'
+            if fl & F['comp']:
+                g, gmax = self.gr(ch, reset=False)
+                line += f'  [GR {g:.1f} dB, max {gmax:.1f}]'
+            print(line)
+        if not anyon:
+            print('  all off (stock sound)')
+
+
+def strip_fs(lab, fs):
+    if fs:
+        return fs
+    per = struct.unpack('<I', lab.peek(VARS + 8, 4, 4))[0]
+    if not per:
+        raise SystemExit('meter period is 0: is the unit armed and running 44.1/48/88.2 kHz? (or pass --fs)')
+    est = CCLK / per
+    fs = min((44100, 48000, 88200), key=lambda r: abs(r - est))
+    if abs(fs - est) > 0.03 * fs:
+        raise SystemExit(f'meter says {est:.0f} Hz: the strip runs only at 44.1/48/88.2k (or pass --fs)')
+    return fs
+
+
+def strip_selftest(lab):
+    import os
+    import random
+    syms = {}
+    nm = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'patches', 'lab1.nm')
+    for line in open(nm):
+        p_ = line.split()
+        if len(p_) == 3:
+            syms[p_[2]] = int(p_[0], 16)
+    rnd = random.Random(1)
+    cases = [(1 << 29, 1 << 30), (-(1 << 31) + 4, (1 << 30) - 1), (-(1 << 31) + 4, -(1 << 31) + 1),
+             (123456789, -987654321), (-1, 1), (-1, -1), (3, -3), (0x7fffffff, 0x7fffffff)]
+    cases += [(rnd.randrange(-(1 << 31), 1 << 31), rnd.randrange(-(1 << 31), 1 << 31)) for _ in range(30)]
+    for name, sh in (('_strip_mul', 30), ('_strip_mul27', 27)):
+        bad = 0
+        for a_, b_ in cases:
+            want = max(-(1 << 31), min((1 << 31) - 1, (a_ * b_) >> sh))
+            r0, _ = lab.call(syms[name], a_ & 0xFFFFFFFF, b_ & 0xFFFFFFFF, 0)
+            got = r0 - (1 << 32) if r0 & 0x80000000 else r0
+            if got != want:
+                bad += 1
+                print(f'  {name} {a_} * {b_}: got {got}, want {want}')
+        print(f'{name}: {len(cases) - bad}/{len(cases)} exact')
+
+
+def bq_model(c, st, x):
+    """Exact model of _bq_run (lab1.S) / bq_run (strip.c host build). c: stored Q30 [b0 b1 b2 -a1 -a2],
+    st: [x1, x2, y1, y2, e] (updated in place). Returns y."""
+    a = [x, st[0], st[1], st[2], st[3]]
+    ll = mid = hh = 0
+    for ai, ci in zip(a, c):
+        aL, bL, aH, bH = ai & 0xFFFF, ci & 0xFFFF, ai >> 16, ci >> 16
+        ll += aL * bL
+        mid += aH * bL + bH * aL
+        hh += aH * bH
+    acc = (ll >> 16) + mid + st[4]
+    e = acc & 0x3FFF
+    y = max(-(1 << 31), min((1 << 31) - 1, (hh << 2) + (acc >> 14)))
+    y = max(-(1 << 30), min((1 << 30) - 1, y))
+    st[:] = [x, st[0], y, st[2], e]
+    return y
+
+
+def strip_bqtest(lab, n=200):
+    """Run the unit's _bq_run sample by sample on a scratch biquad in the upload area; compare bit-exact with bq_model."""
+    import os
+    import random
+    syms = {}
+    nm = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'patches', 'lab1.nm')
+    for line in open(nm):
+        p_ = line.split()
+        if len(p_) == 3:
+            syms[p_[2]] = int(p_[0], 16)
+    fn = syms['_bq_run']
+    area = 0x3E0000                     # scratch, away from the page blob at 0x3B0000
+    rnd = random.Random(7)
+    worst = 0
+    for name, c in (('hpf 100', q30(rbj('hpf', 44100, 100))), ('peak 1k +12', q30(rbj('peak', 44100, 1000, 12, 2))),
+                    ('low 60 +12', q30(rbj('low', 44100, 60, 12)))):
+        st = [0, 0, 0, 0, 0]
+        lab.poke(area, struct.pack('<5i5i', *c, 0, 0, 0, 0, 0), 4)
+        bad, cyc_min = 0, 1 << 30
+        for i in range(n):
+            if i < n // 2:
+                x = round(0.9 * (1 << 27) * math.sin(2 * math.pi * 997 * i / 44100))
+            else:
+                x = rnd.choice([rnd.randrange(-(1 << 31), 1 << 31), rnd.randrange(-(1 << 27), 1 << 27), 0, (1 << 31) - 1, -(1 << 31)])
+            want = bq_model(c, st, x)
+            r0, cyc = lab.call(fn, area, x & 0xFFFFFFFF, 0)
+            got = r0 - (1 << 32) if r0 & 0x80000000 else r0
+            cyc_min = min(cyc_min, cyc)
+            if got != want:
+                bad += 1
+                if bad <= 3:
+                    print(f'  {name} #{i}: x {x} got {got} want {want}')
+        unit_st = list(struct.unpack('<5i', lab.peek(area + 20, 20, 4)))
+        unit_st[4] &= 0xFFFFFFFF
+        ok_st = unit_st == st
+        worst = max(worst, bad)
+        print(f'{name}: {n - bad}/{n} samples bit-exact, state {"matches" if ok_st else f"DIFFERS {unit_st} vs {st}"}, '
+              f'call {cyc_min} cycles incl. lab overhead')
+    return worst
+
+
+# ---- STRIP page, live (patches/page.c blob at 0x3B0000 hijacks screen 18 = AUTO-SENS setup) ----
+PAGE_BASE = 0x3B0000
+PAGE_SLOTS = [(0x402434, '_pg_create', 0x318704), (0x40243c, '_pg_destroy', 0x318824),
+              (0x402444, '_pg_key', 0x3188e4), (0x40244c, '_pg_keyup', 0x318af6),
+              (0x40245c, '_pg_draw', 0x31883c), (0x402484, '_pg_enc', 0x318894),
+              # screen 2 = Channel page -> Rosetta Channel page
+              (0x401554, '_chp_create', 0x310418), (0x40155c, '_pg_destroy', 0x310620),
+              (0x401564, '_chp_key', 0x31076c), (0x40156c, '_chp_keyup', 0x30fb10),
+              (0x40157c, '_chp_draw', 0x3106a0), (0x4015a4, '_chp_enc', 0x310958)]
+CUR_SCREEN = 0x419a5e
+
+
+def page_cmd(lab, a):
+    import os
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'patches')
+    cur = struct.unpack('<h', lab.peek(CUR_SCREEN, 2, 2))[0]
+    if cur in (2, 18):
+        raise SystemExit(f'the unit is on screen {cur} (Channel/STRIP) right now: go back to HOME first (DISPLAY), then retry')
+    if a and a[0] == 'unload':
+        for slot, _, stock in PAGE_SLOTS:
+            lab.poke(slot, struct.pack('<I', stock), 4)
+        print('screens 2 and 18 = stock Channel / AUTO-SENS again')
+        return
+    syms = {}
+    for line in open(os.path.join(here, 'page.nm')):
+        p_ = line.split()
+        if len(p_) == 3:
+            syms[p_[2]] = int(p_[0], 16)
+    blob = open(os.path.join(here, 'page.bin'), 'rb').read()
+    blob += bytes(-len(blob) % 4)
+    if PAGE_BASE + len(blob) > 0x3E0000:
+        raise SystemExit('page blob too big for the upload area')
+    for slot, _, stock in PAGE_SLOTS:                   # stock first: never run half-uploaded code
+        lab.poke(slot, struct.pack('<I', stock), 4)
+    t0 = time.time()
+    lab.poke(PAGE_BASE, blob, 1)
+    want = sum(struct.unpack(f'<{len(blob) // 4}I', blob)) & 0xFFFFFFFF
+    got = lab.sum(PAGE_BASE, len(blob))
+    if got != want:
+        raise SystemExit(f'upload sum mismatch ({got:#x} vs {want:#x}): not installing')
+    lab.flush(PAGE_BASE, len(blob))
+    for slot, name, _ in PAGE_SLOTS:
+        lab.poke(slot, struct.pack('<I', syms[name]), 4)
+    print(f'page: {len(blob)} B uploaded + verified in {time.time() - t0:.1f} s: screen 2 -> Rosetta Channel page, '
+          f'screen 18 -> STRIP page. Undo: octa_lab.py page unload, or power-cycle.')
+
+
+def strip_cmd(lab, a, fs):
+    st = Strip(lab, fs)
+    if not a:
+        return st.status()
+    cmd = a[0]
+    if cmd == 'selftest':
+        return strip_selftest(lab)
+    if cmd == 'bqtest':
+        return strip_bqtest(lab)
+    if cmd == 'off':
+        ch = None if a[1] == 'all' else int(a[1]) - 1
+        return st.off(ch, [a[2]] if len(a) > 2 else list(F))
+    ch = int(a[1]) - 1
+    if not 0 <= ch < st.nch:
+        raise SystemExit('input 1-8')
+    v = [float(x) for x in a[2:]]
+    if cmd == 'gr':
+        g, gmax = st.gr(ch)
+        print(f'in {ch + 1}: GR {g:.2f} dB now, {gmax:.2f} dB max since last read')
+    elif cmd == 'gain':
+        st.gain(ch, v[0], v[1] if len(v) > 1 else 0.0)
+    elif cmd == 'hpf':
+        st.eq(ch, 'hpf', rbj('hpf', st.fs, v[0], 0, v[1] if len(v) > 1 else 0.7071))
+    elif cmd in ('low', 'peak', 'high'):
+        st.eq(ch, cmd, rbj(cmd, st.fs, v[0], v[1], v[2] if len(v) > 2 else 0.7071))
+    elif cmd == 'tube':
+        st.tube(ch, v[0], v[1] if len(v) > 1 else 0.2, v[2] if len(v) > 2 else 0.0)
+    elif cmd == 'comp':
+        d = [-18.0, 4.0, 10.0, 150.0, 6.0, 0.0]
+        d[:len(v)] = v
+        st.comp(ch, *d)
+    else:
+        raise SystemExit(__doc__)
+    st.status()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('cmd')
@@ -213,6 +588,7 @@ def main():
     ap.add_argument('--unit', type=int, default=0)
     ap.add_argument('--w', type=int, default=1, choices=(1, 2, 4))
     ap.add_argument('--force', action='store_true')
+    ap.add_argument('--fs', type=int, default=0)
     o = ap.parse_args()
     if o.cmd == 'ports':
         print('in :', mido.get_input_names())
@@ -248,13 +624,21 @@ def main():
         regs = [h(x) for x in a[1:4]] + [0] * (3 - len(a[1:4]))
         r0, cyc = lab.call(h(a[0]), *regs)
         print(f'R0 = {r0:#x}  ({cyc} cycles)')
+    elif o.cmd == 'meter' and a and a[0] in ('show', 'hide'):
+        f = struct.unpack('<I', lab.peek(VARS + 0x14, 4, 4))[0]
+        lab.poke(VARS + 0x14, struct.pack('<I', (f | 2) if a[0] == 'show' else (f & ~2)), 4)
     elif o.cmd == 'meter':
         v = lab.peek(VARS, 0x18, 4)
         armed, last, per, bmax, frames, flags = struct.unpack('<6I', v)
         print(f'busy max {bmax} / period {per} cycles = {100 * bmax / max(per, 1):.1f}% '
               f'(CCLK ~ {per * 48000 / 1e6:.0f} MHz if 48 kHz), frames {frames}, armed {armed == 0x52535441}')
     elif o.cmd == 'chop':
-        lab.poke(VARS + 0x14, struct.pack('<I', 1 if a[0] == 'on' else 0), 4)
+        f = struct.unpack('<I', lab.peek(VARS + 0x14, 4, 4))[0]
+        lab.poke(VARS + 0x14, struct.pack('<I', (f | 1) if a[0] == 'on' else (f & ~1)), 4)
+    elif o.cmd == 'page':
+        page_cmd(lab, a)
+    elif o.cmd == 'strip':
+        strip_cmd(lab, a, o.fs)
     elif o.cmd == 'memprobe':
         memprobe(lab)
     elif o.cmd == 'memcheck':

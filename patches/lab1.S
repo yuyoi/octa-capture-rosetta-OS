@@ -1,8 +1,9 @@
 /* Rosetta OCTA-CAPTURE lab1: CPU meter + Rosetta Lab SysEx backend (docs/LAB.md).
  *
- * .ra  0x30de0e (136 B, dead overlay body)  wrap48 (meter, optional chopper), arm_stub
+ * .ra  0x30de0e (136 B, dead overlay body)  arm_stub
  * .rb  0x30de98 (292 B, dead overlay body)  ui_hook (meter on the LCD), midi_hook (ARMED gate stub)
- * .lab LAB_BASE (appended after the init table; the loader unpacks it with the rest of main)
+ * .lab LAB_BASE (appended after the init table; the loader unpacks it with the rest of main):
+ *      lab backend, wrap48 (strip + stock 48k chain + meter/chopper), strip.c
  *
  * Reachability (brick rule: nothing new may run before the key scan at 0x31bbf6):
  *   arm_stub  <- CALL at 0x31bd7a, mode-0 path only, after the scan. It sets ARMED.
@@ -35,42 +36,16 @@
 
 /* ===================================================================== .ra */
         .section .ra, "ax"
-        .global wrap48, arm_stub
-wrap48:                                 /* R0=in R1=out R2=usbplay, arg4 rec at caller [SP+0xc] */
-        LINK 0;
-        [--SP] = (R7:7, P5:3);
-        SP += -16;
-        P3 = [FP + 0x14];
-        P5.L = VARS & 0xffff;  P5.H = VARS >> 16;
-        R7 = CYCLES;
-        R3 = [P5 + 4];
-        [P5 + 4] = R7;
-        R3 = R7 - R3;
-        [P5 + 8] = R3;
-        [SP + 0xc] = P3;
-        P0.L = STOCK48 & 0xffff;  P0.H = STOCK48 >> 16;
-        CALL (P0);
-        R0 = [P5 + 0x10];
-        R0 += 1;
-        [P5 + 0x10] = R0;
-        R1 = [P5 + 0x14];               /* FLAGS bit0: record-ch1 chopper (off by default, lab: chop on) */
-        CC = BITTST (R1, 0);
-        IF !CC JUMP 1f;
-        CC = BITTST (R0, 15);
-        IF !CC JUMP 1f;
-        R0 = 0;
-        [P3] = R0;
-1:      R0 = CYCLES;
-        R0 = R0 - R7;
-        R1 = [P5 + 0xc];
-        R0 = MAX (R0, R1);
-        [P5 + 0xc] = R0;
-        SP += 16;
-        (R7:7, P5:3) = [SP++];
-        UNLINK;
-        RTS;
-
+        .global arm_stub
 arm_stub:                               /* from 0x31bd7a, R0 = 2 must survive */
+        [--SP] = RETS;
+        [--SP] = R0;
+        SP += -12;
+        CALL _strip_init;               /* channel strip block in free L1 data: all off, then magic */
+        CALL _page_install;             /* screen 18 -> STRIP page, SENS -> GAIN (page.c) */
+        SP += 12;
+        R0 = [SP++];
+        RETS = [SP++];
         R1 = SYSCFG;
         BITSET (R1, 1);
         SYSCFG = R1;
@@ -112,6 +87,9 @@ ui_hook:
         R0 = 0;
         [P5 + 0xc] = R0;
         STI R2;
+        R0 = [P5 + 0x14];               /* FLAGS bit1: show the load numbers (octa_lab.py meter show); off by default */
+        CC = BITTST (R0, 1);
+        IF !CC JUMP 9f;
         R0 = FP;
         R0 += -0x20;
         R1.L = FMT & 0xffff;  R1.H = FMT >> 16;
@@ -176,7 +154,7 @@ midi_hook:
 
 /* ===================================================================== .lab (appended code) */
         .section .lab, "ax"
-        .global lab_entry
+        .global lab_entry, wrap48
 /* Reached from midi_hook only when ARMED (task 9, stack 0x400 with ~0x290 usable here: keep frames small).
  * The dispatcher needs R4, P3, P4, FP, SP and its stack slots [SP+0x34..0x3c] kept; R0-R3, R5-R7, P0-P2, P5,
  * CC are free (re-derived before use). Not ours: return with R1 = [SP+0x3c], R0 = 0xf. Ours: go to 0x369566. */
@@ -194,6 +172,109 @@ lab_entry:
         R0 = 0xf (X);                   /* 0x369566 needs only R4, P4 and SP (all intact) */
         JUMP (P0);
 1:      R0 = 0xf (X);                   /* not ours: exactly the two replaced instructions */
+        RTS;
+
+/* Per-sample wrapper around Roland's 48k chain (installed into [0xff8010b4] by ui_hook, post-scan; IVG10).
+ * Channel strip first (strip.c, on in[] before the stock chain), then the stock chain, then the meter/chopper.
+ * Stack: 52 B here; strip_pre's frame is gone before the stock chain runs, so the peak grows by 12 B only. */
+wrap48:                                 /* R0=in R1=out R2=usbplay, arg4 rec at caller [SP+0xc] */
+        LINK 0;
+        [--SP] = (R7:4, P5:3);
+        SP += -16;
+        P3 = [FP + 0x14];
+        R4 = R0;
+        R5 = R1;
+        R6 = R2;
+        P5.L = VARS & 0xffff;  P5.H = VARS >> 16;
+        R7 = CYCLES;
+        R3 = [P5 + 4];
+        [P5 + 4] = R7;
+        R3 = R7 - R3;
+        [P5 + 8] = R3;
+        CALL _strip_pre;                /* R0 = in; keeps R4-R7, P3-P5, FP; L0-L3 stay 0 */
+        R0 = R4;
+        R1 = R5;
+        R2 = R6;
+        [SP + 0xc] = P3;
+        P0.L = STOCK48 & 0xffff;  P0.H = STOCK48 >> 16;
+        CALL (P0);
+        R0 = [P5 + 0x10];
+        R0 += 1;
+        [P5 + 0x10] = R0;
+        R1 = [P5 + 0x14];               /* FLAGS bit0: record-ch1 chopper (off by default, lab: chop on) */
+        CC = BITTST (R1, 0);
+        IF !CC JUMP 1f;
+        CC = BITTST (R0, 15);
+        IF !CC JUMP 1f;
+        R0 = 0;
+        [P3] = R0;
+1:      R0 = CYCLES;
+        R0 = R0 - R7;
+        R1 = [P5 + 0xc];
+        R0 = MAX (R0, R1);
+        [P5 + 0xc] = R0;
+        SP += 16;
+        (R7:4, P5:3) = [SP++];
+        UNLINK;
+        RTS;
+
+/* int bq_run(struct bq *s, int x): one biquad sample, exact accumulator math + error feedback (strip.c documents
+ * the math; tests/test_strip_host.py runs the same model, `octa_lab.py strip bqtest` checks this code bit-exact).
+ * struct bq: c[5] @0 (b0 b1 b2 -a1 -a2, Q30), x1 @20, x2 @24, y1 @28, y2 @32, e @36. Uses R0-R3, R7, P0, A0, A1. */
+        .global _bq_run
+_bq_run:
+        [--SP] = R7;
+        P0 = R0;
+        R2 = [P0];
+        A1 = R1.L * R2.L (FU);
+        R2 = [P0 + 4];  R3 = [P0 + 20];
+        A1 += R3.L * R2.L (FU);
+        R2 = [P0 + 8];  R3 = [P0 + 24];
+        A1 += R3.L * R2.L (FU);
+        R2 = [P0 + 12]; R3 = [P0 + 28];
+        A1 += R3.L * R2.L (FU);
+        R2 = [P0 + 16]; R3 = [P0 + 32];
+        A1 += R3.L * R2.L (FU);
+        A1 = A1 >> 16;
+        R2 = [P0];
+        A1 += R1.H * R2.L (M, IS);
+        A1 += R2.H * R1.L (M, IS);
+        A0 = R1.H * R2.H (IS);
+        R2 = [P0 + 4];  R3 = [P0 + 20];
+        A1 += R3.H * R2.L (M, IS);
+        A1 += R2.H * R3.L (M, IS);
+        A0 += R3.H * R2.H (IS);
+        R2 = [P0 + 8];  R3 = [P0 + 24];
+        A1 += R3.H * R2.L (M, IS);
+        A1 += R2.H * R3.L (M, IS);
+        A0 += R3.H * R2.H (IS);
+        R2 = [P0 + 12]; R3 = [P0 + 28];
+        A1 += R3.H * R2.L (M, IS);
+        A1 += R2.H * R3.L (M, IS);
+        A0 += R3.H * R2.H (IS);
+        R2 = [P0 + 16]; R3 = [P0 + 32];
+        A1 += R3.H * R2.L (M, IS);
+        A1 += R2.H * R3.L (M, IS);
+        A0 += R3.H * R2.H (IS);
+        R2 = [P0 + 36];
+        R7 = 1;
+        A1 += R2.L * R7.L (FU);
+        R2 = A1.W;
+        R3 = 0x3fff (Z);
+        R2 = R2 & R3;
+        [P0 + 36] = R2;
+        A1 = A1 >>> 14;
+        A0 = A0 << 2;
+        R0 = (A0 += A1);
+        R2.L = 0xffff;  R2.H = 0x3fff;
+        R0 = MIN (R0, R2);
+        R2 = ~R2;
+        R0 = MAX (R0, R2);
+        R2 = [P0 + 20]; [P0 + 24] = R2;
+        [P0 + 20] = R1;
+        R2 = [P0 + 28]; [P0 + 32] = R2;
+        [P0 + 28] = R0;
+        R7 = [SP++];
         RTS;
 
 /* ---- fault catcher (lab v1.1) ----

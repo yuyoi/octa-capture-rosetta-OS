@@ -11,6 +11,7 @@
 !/docs/
 !/re/
 !/patches/
+!/app/
 /patches/*
 !/patches/*.S
 !/patches/*.c
@@ -20,6 +21,7 @@
 !/patches/*.ld
 !/patches/asm.py
 !/patches/remote_asm.sh
+!/patches/page_build.py
 /patches/*_pp.S
 /re/*
 !/re/*.md
@@ -28,6 +30,13 @@
 !/art/rosetta_splash_v*_preview.png
 !/art/rosetta_splash_candidates.png
 !/art/rosetta_splash_v3_v4_preview.png
+!/art/app/
+/art/app/*
+!/art/app/tube/
+!/art/app/shot_v*.png
+!/art/screens/
+/art/screens/*
+!/art/screens/channel_before_after.png
 __pycache__/
 *.dat
 *.bin

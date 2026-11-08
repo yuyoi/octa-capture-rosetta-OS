@@ -10,5 +10,5 @@ SECTIONS
   .h_ga  0x30de96 : { lab1.o(.h_ga) }
   .h_midi 0x36949a : { lab1.o(.h_midi) }
   .lab   0x3a3000 : { lab1.o(.lab) *(.text) *(.text.*) *(.rodata) *(.rodata.*) *(.data) *(.data.*) *(.bss) *(.bss.*) *(COMMON) }
-  /DISCARD/ : { *(.comment) *(.note*) }
+  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame) *(.eh_frame_hdr) *(.debug*) }
 }

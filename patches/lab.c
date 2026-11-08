@@ -18,6 +18,7 @@ typedef unsigned char u8;
 #endif
 
 #define VARS 0x41d5e4u
+extern u32 strip_addr(void);    /* strip.c: the channel strip block (L1 data) */
 #define RXMAX 320
 #define TXMAX 320
 
@@ -226,6 +227,7 @@ static void exec(void)
         putb(LAB_VER >> 8); putb(LAB_VER);
         put32(VARS);
         put32(UPLOAD_BASE);
+        put32(strip_addr());                            /* lab >= 1.3 */
         run = 0;
         break;
     case 2: case 3:                                     /* PEEK / POKE */
