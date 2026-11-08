@@ -6,7 +6,9 @@
 // stdin:  rec <folder>   start a take (files: b1_in01.wav ... b2_in10.wav)
 //         stop           finish it (silent tracks are deleted)
 //         quit
+//         sx <box> <hex>  send one SysEx message to a box (lab / Roland parameter messages)
 // stdout: READY <boxes> <rate> | NOBOX | M <box> <10 x peak dBFS> | REC | DONE <seconds> <dropouts> <ratio_ppm> <kept...>
+//         S <box> <hex>   SysEx from a box
 //         ERR <text>
 // Copyright (C) 2026 JunkSmithWizard + Claude. GPLv3, see dual/LICENSE.
 #include <windows.h>
@@ -155,11 +157,67 @@ struct Box {
     std::string path[INPUTS];
     double peak_rec[INPUTS] = {};
 
+    // MIDI (interface 2, bulk 06/86): the CTRL link that the lab and Roland's parameter messages use
+    WINUSB_INTERFACE_HANDLE h2 = nullptr;
+    std::thread mt;
+    std::vector<BYTE> sx[16];
+
     bool open(const Dev &d, int alt) {
         file = CreateFileW(d.path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
         if (file == INVALID_HANDLE_VALUE || !WinUsb_Initialize(file, &h0)) return false;
-        return WinUsb_GetAssociatedInterface(h0, 0, &h1) && setup(alt);
+        if (!WinUsb_GetAssociatedInterface(h0, 0, &h1) || !WinUsb_GetAssociatedInterface(h0, 1, &h2)) return false;
+        return setup(alt);
+    }
+
+    void midi_rx() {                                     // USB-MIDI packets in; complete SysEx messages go to stdout
+        BYTE b[512];
+        OVERLAPPED o = {};
+        o.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        while (!g_quit) {
+            ResetEvent(o.hEvent);
+            if (!WinUsb_ReadPipe(h2, 0x86, b, sizeof b, nullptr, &o) && GetLastError() != ERROR_IO_PENDING) {
+                Sleep(10);
+                continue;
+            }
+            DWORD n = 0;
+            if (!WinUsb_GetOverlappedResult(h2, &o, &n, TRUE)) {
+                if (!g_quit) Sleep(5);
+                continue;
+            }
+            for (DWORD i = 0; i + 4 <= n; i += 4) {
+                const int cable = b[i] >> 4, cin = b[i] & 15;
+                const int len = cin == 4 || cin == 7 ? 3 : cin == 6 ? 2 : cin == 5 ? 1 : 0;
+                if (!len) continue;
+                sx[cable].insert(sx[cable].end(), b + i + 1, b + i + 1 + len);
+                if (cin == 4) continue;
+                if (sx[cable][0] == 0xF0) {
+                    std::string h;
+                    char t[4];
+                    for (BYTE v : sx[cable]) snprintf(t, sizeof t, "%02x", v), h += t;
+                    say("S %d %s\n", this->n, h.c_str());
+                }
+                sx[cable].clear();
+            }
+        }
+        CloseHandle(o.hEvent);
+    }
+
+    void midi_send(const std::vector<BYTE> &m) {         // one SysEx message, out on cable 2 (as Roland's driver does)
+        std::vector<BYTE> pk;
+        for (size_t i = 0; i < m.size();) {
+            const size_t left = m.size() - i;
+            const int cin = left > 3 ? 4 : left == 3 ? 7 : left == 2 ? 6 : 5, take = left > 3 ? 3 : (int)left;
+            pk.push_back((BYTE)(2 << 4 | cin));
+            for (int k = 0; k < 3; k++) pk.push_back(k < take ? m[i + k] : 0);
+            i += take;
+        }
+        OVERLAPPED o = {};
+        o.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        DWORD n = 0;
+        if (WinUsb_WritePipe(h2, 0x06, pk.data(), (ULONG)pk.size(), nullptr, &o) || GetLastError() == ERROR_IO_PENDING)
+            WinUsb_GetOverlappedResult(h2, &o, &n, TRUE);
+        CloseHandle(o.hEvent);
     }
     bool setup(int alt) {
         if (!WinUsb_SetCurrentAlternateSetting(h1, (UCHAR)alt)) return false;
@@ -186,6 +244,7 @@ struct Box {
                 return false;
         th = std::thread([this] { stream(); });
         wr = std::thread([this] { writer(); });
+        mt = std::thread([this] { midi_rx(); });
         return true;
     }
 
@@ -482,6 +541,16 @@ int main() {
                 say("REC\n");
             else
                 say("ERR cannot create files in %s\n", line + 4);
+        } else if (!strncmp(line, "sx ", 3)) {           // sx <box> <hex of the whole SysEx message>
+            int box = line[3] - '0';
+            const char *h = line + 5;
+            std::vector<BYTE> m;
+            for (; h[0] && h[1]; h += 2) {
+                unsigned v = 0;
+                sscanf(h, "%2x", &v);
+                m.push_back((BYTE)v);
+            }
+            if (box >= 0 && box < (int)boxes.size() && !m.empty()) boxes[box]->midi_send(m);
         } else if (!strcmp(line, "stop")) {
             if (g_rec) end_take(boxes);
         } else if (!strcmp(line, "quit")) {
@@ -492,9 +561,11 @@ int main() {
     g_quit = true;
     for (auto &b : boxes) {
         WinUsb_AbortPipe(b->h1, 0x85);
+        WinUsb_AbortPipe(b->h2, 0x86);
         { std::lock_guard<std::mutex> lk(b->mu); b->wr_stop = true; }
         b->cv.notify_all();
         if (b->th.joinable()) b->th.join();
+        if (b->mt.joinable()) b->mt.join();
         if (b->wr.joinable()) b->wr.join();
         WinUsb_UnregisterIsochBuffer(b->bh);
         WinUsb_SetCurrentAlternateSetting(b->h1, 0);

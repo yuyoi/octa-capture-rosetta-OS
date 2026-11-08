@@ -1,5 +1,6 @@
 """Link to dual/build/octarec.exe, the USB recording engine (boxes on WinUSB, no Roland driver).
 One reader thread turns the engine's lines into Qt signals; the app sends rec / stop / quit."""
+import collections
 import os
 import subprocess
 import threading
@@ -8,6 +9,40 @@ from PySide6.QtCore import QObject, Signal
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXE = os.path.join(HERE, '..', 'dual', 'build', 'octarec.exe')
+
+
+class _Msg:
+    type = 'sysex'
+
+    def __init__(self, data):
+        self.data = data
+
+
+class _Out:
+    """looks like a mido output port to tools/octa_lab.py, sends through the engine"""
+
+    def __init__(self, engine, box):
+        self.engine, self.box = engine, box
+
+    def send(self, msg):
+        self.engine.sysex(self.box, [0xF0] + list(msg.data) + [0xF7])
+
+    def close(self):
+        pass
+
+
+class _In:
+    """looks like a mido input port: complete SysEx messages the engine received from this box"""
+
+    def __init__(self):
+        self.q = collections.deque(maxlen=512)
+
+    def iter_pending(self):
+        while self.q:
+            yield _Msg(self.q.popleft())
+
+    def close(self):
+        pass
 
 
 class Engine(QObject):
@@ -23,6 +58,14 @@ class Engine(QObject):
         self.p = None
         self.result = None
         self.finished = threading.Event()
+        self.lock = threading.Lock()
+        self.inq = [_In(), _In()]
+
+    def ports(self, box):
+        return _Out(self, box), self.inq[box]
+
+    def sysex(self, box, data):
+        self._send('sx %d %s' % (box, bytes(data).hex()))
 
     def start(self):
         if not os.path.exists(EXE):
@@ -34,8 +77,9 @@ class Engine(QObject):
 
     def _send(self, s):
         try:
-            self.p.stdin.write(s + '\n')
-            self.p.stdin.flush()
+            with self.lock:
+                self.p.stdin.write(s + '\n')
+                self.p.stdin.flush()
         except (OSError, ValueError, AttributeError):
             self.error.emit('the recording engine has stopped')
 
@@ -58,6 +102,8 @@ class Engine(QObject):
                 continue
             if a[0] == 'M':
                 self.meters.emit(int(a[1]), [float(x) for x in a[2:]])
+            elif a[0] == 'S':
+                self.inq[int(a[1])].q.append(tuple(bytes.fromhex(a[2])[1:-1]))
             elif a[0] == 'READY':
                 self.ready.emit(int(a[1]), int(a[2]))
             elif a[0] == 'NOBOX':

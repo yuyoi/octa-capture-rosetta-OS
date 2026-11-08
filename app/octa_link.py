@@ -41,6 +41,7 @@ class Link(QObject):
     def __init__(self, unit=0):
         super().__init__()
         self.unit = unit
+        self.transport = None                  # callable -> (out, in) ports when the box is on our USB engine
         self.pending = {}
         self.lock = threading.Lock()
         self.watch = 0
@@ -93,7 +94,7 @@ class Link(QObject):
 
     def connect(self):
         import octa_lab
-        self.lab = octa_lab.Lab(unit=self.unit)
+        self.lab = octa_lab.Lab(unit=self.unit, ports=self.transport() if self.transport else None)
         self.strip = octa_lab.Strip(self.lab)
         try:
             self.fs = self.strip.fs

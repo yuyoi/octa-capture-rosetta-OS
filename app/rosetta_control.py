@@ -14,6 +14,7 @@ import datetime
 import math
 import os
 import shutil
+import struct
 import sys
 import time
 
@@ -26,6 +27,18 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QGridLayout, 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ART = os.path.join(HERE, '..', 'art', 'app')
 RECORDINGS = os.environ.get('RD_RECDIR', r'E:\skriv 2026\recordings')   # same folder as the old OCTA REC
+
+# ready-made chains (starting points; same parameters as the knobs)
+_ALL = ('hpf', 'low', 'peak', 'high', 'tube', 'comp')
+PRESETS = {
+    'vocal': dict(on=_ALL, track=('Vocal', 'vocal'), hpf_f=90.0, low_f=200.0, low_g=-1.5, peak_f=3000.0, peak_g=2.0, peak_q=1.0,
+                  high_f=10000.0, high_g=2.5, drive=6.0, bias=0.20, tube_out=0.0, thresh=-18.0, ratio=3.0, attack=10.0,
+                  release=120.0, makeup=3.0),
+    'guitar': dict(on=_ALL, track=('Guitar', 'guitar'), hpf_f=80.0, low_f=200.0, low_g=-2.0, peak_f=2500.0, peak_g=2.0, peak_q=1.0,
+                   high_f=7000.0, high_g=-3.0, drive=12.0, bias=0.30, tube_out=0.0, thresh=-20.0, ratio=4.0, attack=20.0,
+                   release=150.0, makeup=3.0),
+    'flat': dict(on=()),
+}
 
 # ---------------- palette (OCTA-CAPTURE front panel) ----------------
 PANEL = QColor('#0c0d0f')
@@ -715,6 +728,8 @@ class Header(QWidget):
 
 
 class StripPage(QWidget):
+    preset = Signal(str)
+
     def __init__(self, chans, parent=None):
         super().__init__(parent)
         self.chans, self.ch, self.link = chans, 0, None
@@ -732,6 +747,10 @@ class StripPage(QWidget):
             blocks.addWidget(b)
             self.blk[k] = b
         blocks.addStretch(1)
+        for name in ('vocal', 'guitar', 'flat'):         # ready-made chains for the shown input
+            b = BlueButton(name.upper(), w=74, h=30)
+            b.toggled.connect(lambda _, n=name, btn=b: (setattr(btn, 'checked', False), btn.update(), self.preset.emit(n)))
+            blocks.addWidget(b)
         root.addLayout(blocks)
         mid = QHBoxLayout()
         mid.setSpacing(10)
@@ -1016,7 +1035,7 @@ class Main(QWidget):
             for i, u in enumerate(self.units):
                 L = u['link'] = Link(i)
                 L.status.connect(lambda t, o, k=i: self.usb_rate or self.header.unit_status(k, t, o))
-                L.meters.connect(lambda db, gr, k=i: k == self.cur and self.on_meters(db, gr))
+                L.meters.connect(lambda db, gr, k=i: k == self.cur and self.on_link_meters(db, gr))
                 L.preamp.connect(lambda ch, g, ph, k=i: k == self.cur and self.strip.on_preamp(ch, g, ph))
                 L.flags.connect(lambda fl, k=i: self.on_flags(k, fl))
                 L.start()
@@ -1031,6 +1050,69 @@ class Main(QWidget):
             self.engine.start()
         self.rec_timer = QTimer(self)
         self.rec_timer.timeout.connect(self.rec_tick)
+        self.strip.preset.connect(lambda name: self.apply_preset(self.cur, self.strip.ch, name))
+        self.do_timer = QTimer(self)
+        self.do_timer.timeout.connect(self.poll_do)
+        self.do_timer.start(300)
+
+    def on_link_meters(self, db, gr):
+        if not self.usb_rate:
+            self.on_meters(db, gr)
+            return
+        self.strip.gr.level = min(1.0, max(0.0, gr / 20))     # on USB the engine feeds the input meters
+        self.strip.gr.update()
+
+    # ---------------- ready-made chains ----------------
+    def apply_preset(self, unit, ch, name):
+        p = PRESETS[name]
+        c = self.units[unit]['chans'][ch]
+        c.update({k: v for k, v in p.items() if k not in ('on', 'track')})
+        c['on'].update({b: b in p['on'] for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp')})
+        L = self.units[unit]['link']
+        if L:
+            for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp'):
+                L.set_block(ch, b, c['on'][b], dict(c))
+        tracks = load_tracks(unit)
+        if p.get('track') and not tracks[ch].get('name'):     # an unnamed input takes the preset's name + picture
+            tracks[ch] = dict(name=p['track'][0], icon=p['track'][1])
+            save_tracks(tracks, unit)
+            if unit == self.cur:
+                self.rail.set_unit(unit)
+        if unit == self.cur:
+            self.strip.show_chan(self.strip.ch)
+        self.retitle()
+
+    def do_log(self, s):
+        with open(os.path.join(HERE, 'do.out'), 'a', encoding='utf-8') as f:
+            f.write(s + '\n')
+
+    def poll_do(self):
+        """app/do.txt: commands Claude drops in while the app runs (it owns the USB link, so nothing else can talk
+        to the boxes): preset <unit> <input> <vocal|guitar|flat>, whoami"""
+        p = os.path.join(HERE, 'do.txt')
+        if not os.path.exists(p):
+            return
+        with open(p, encoding='utf-8') as f:
+            lines = f.read().splitlines()
+        os.remove(p)
+        for ln in lines:
+            a = ln.split()
+            if a[:1] == ['preset'] and len(a) == 4 and a[3] in PRESETS:
+                self.apply_preset(int(a[1]) - 1, int(a[2]) - 1, a[3])
+                self.do_log('ok ' + ln)
+            elif a[:1] == ['whoami']:
+                for i, u in enumerate(self.units[:self.usb_boxes]):
+                    L = u['link']
+                    if not L or not L.lab:
+                        self.do_log(f'unit {i + 1}: link not up')
+                        continue
+
+                    def ask(k=i, L=L):
+                        v = struct.unpack('<I', L.lab.peek(0x401554, 4, 4))[0]
+                        g = L.lab.call(0x3097e4, 0x43f444, 0, 0)[0]
+                        self.do_log(f'unit {k + 1}: Channel page = {"Roland (has Hi-Z)" if v == 0x310418 else "knob"}, '
+                                    f'input 1 gain {g / 2} dB, strip flags ch1 {L.strip.flags(0)}')
+                    L.send(('who', i), ask)
 
     # ---------------- one-tap recorder (boxes on WinUSB, see octa_engine.py) ----------------
     def free_text(self):
@@ -1043,10 +1125,13 @@ class Main(QWidget):
 
     def on_engine_ready(self, boxes, rate):
         self.usb_rate, self.usb_boxes = rate, boxes
-        for u in self.units:                          # the Roland MIDI path is not there while the boxes are on WinUSB
-            if u['link']:
+        for i, u in enumerate(self.units):            # the lab + Roland messages now go through the USB engine
+            if not u['link']:
+                continue
+            if i < boxes:
+                u['link'].transport = (lambda k=i: self.engine.ports(k))
+            else:
                 u['link'].stop = True
-        self.strip.link = None
         os.makedirs(RECORDINGS, exist_ok=True)
         self.header.units.clear()
         self.header.set_status(f'USB DIRECT   {boxes} box{"es" if boxes > 1 else ""}   {rate / 1000:g} kHz', True)

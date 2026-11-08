@@ -51,3 +51,5 @@ __pycache__/
 tools/*_memprobe.json
 /app/tracks.json
 /app/__pycache__/
+/app/do.txt
+/app/do.out

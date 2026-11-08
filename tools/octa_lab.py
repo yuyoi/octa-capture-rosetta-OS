@@ -89,8 +89,12 @@ def is_safe(a, n):
 
 
 class Lab:
-    def __init__(self, unit=0, force=False):
+    def __init__(self, unit=0, force=False, ports=None):
         self.force = force
+        if ports:                               # (out, in) port objects from elsewhere (app/octa_engine.py, WinUSB path)
+            self.out, self.inp = ports
+            self.seq = 0
+            return
         outs = [p for p in mido.get_output_names() if 'CTRL' in p and 'OCTA' in p]
         ins = [p for p in mido.get_input_names() if 'CTRL' in p and 'OCTA' in p]
         if len(outs) <= unit or len(ins) <= unit:
