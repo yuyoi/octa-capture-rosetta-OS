@@ -440,21 +440,28 @@ ICONS = ['vocal', 'guitar', 'bass', 'acoustic', 'synth', 'kick', 'snare', 'cymba
 TRACKS = os.path.join(HERE, 'tracks.json')
 
 
-def load_tracks():
+def _all_tracks():
     import json
     try:
         t = json.load(open(TRACKS, encoding='utf-8'))
-        if isinstance(t, list) and len(t) == 8:
-            return t
+        return {'0': t} if isinstance(t, list) else dict(t)
     except Exception:
-        pass
+        return {}
+
+
+def load_tracks(unit=0):
+    t = _all_tracks().get(str(unit))
+    if isinstance(t, list) and len(t) == 8:
+        return t
     return [dict(name='', icon='') for _ in range(8)]
 
 
-def save_tracks(t):
+def save_tracks(t, unit=0):
     import json
+    a = _all_tracks()
+    a[str(unit)] = t
     try:
-        json.dump(t, open(TRACKS, 'w', encoding='utf-8'), indent=1)
+        json.dump(a, open(TRACKS, 'w', encoding='utf-8'), indent=1)
     except Exception:
         pass
 
@@ -616,7 +623,8 @@ class ChannelRail(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
-        self.tracks = load_tracks()
+        self.unit = 0
+        self.tracks = load_tracks(0)
         self.btns, self.meters = [], []
         for i in range(8):
             row = QHBoxLayout()
@@ -646,8 +654,15 @@ class ChannelRail(QWidget):
         if d.exec():
             self.tracks[k] = d.result_track()
             self.btns[k].set_track(self.tracks[k])
-            save_tracks(self.tracks)
+            save_tracks(self.tracks, self.unit)
             self.renamed.emit()
+
+    def set_unit(self, u):
+        self.unit = u
+        self.tracks = load_tracks(u)
+        for i, b in enumerate(self.btns):
+            b.set_track(self.tracks[i])
+        self.renamed.emit()
 
     def label(self, k):
         n = self.tracks[k].get('name', '')
@@ -659,10 +674,16 @@ class Header(QWidget):
         super().__init__(parent)
         self.setFixedHeight(58)
         self.text, self.online = 'OFFLINE DEMO', False
+        self.units = {}
 
     def set_status(self, text, online):
         self.text, self.online = text, online
         self.update()
+
+    def unit_status(self, u, text, online):
+        self.units[u] = (text, online)
+        parts = [f'UNIT {k + 1}: {v[0]}' for k, v in sorted(self.units.items())]
+        self.set_status('   '.join(parts), any(v[1] for v in self.units.values()))
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -684,9 +705,9 @@ class Header(QWidget):
         p.drawText(QRectF(410, 22, 300, 20), Qt.AlignLeft | Qt.AlignVCenter, 'OCTA-CAPTURE  ·  ROSETTA OS')
         p.setPen(Qt.NoPen)                                                     # status LED
         p.setBrush(BLUE_LIT if self.online else QColor('#ffb14a'))
-        p.drawEllipse(QPointF(r.right() - 330, 30), 5, 5)
+        p.drawEllipse(QPointF(r.right() - 560, 30), 5, 5)
         p.setPen(TEXT)
-        p.drawText(QRectF(r.right() - 318, 20, 310, 20), Qt.AlignLeft | Qt.AlignVCenter, self.text)
+        p.drawText(QRectF(r.right() - 548, 20, 540, 20), Qt.AlignLeft | Qt.AlignVCenter, self.text)
 
 
 class StripPage(QWidget):
@@ -879,12 +900,14 @@ class Main(QWidget):
         super().__init__()
         self.setWindowTitle('Rosetta Octa Control')
         self.setWindowIcon(QIcon(os.path.join(ART, 'app_icon.ico')))
-        self.resize(1460, 910)
+        self.resize(1460, 950)
         pal = self.palette()
         pal.setColor(self.backgroundRole(), PANEL)
         self.setPalette(pal)
         self.setAutoFillBackground(True)
-        self.chans = [default_chan(demo) for _ in range(8)]
+        self.units = [dict(chans=[default_chan(demo) for _ in range(8)], link=None) for _ in range(2)]
+        self.cur = 0
+        self.chans = self.units[0]['chans']
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(0)
@@ -896,6 +919,15 @@ class Main(QWidget):
         railp = Panel('INPUT')
         rl = QVBoxLayout(railp)
         rl.setContentsMargins(12, 30, 12, 12)
+        ub = QHBoxLayout()
+        ub.setSpacing(6)
+        self.unitbtn = []
+        for i in range(2):
+            b = BlueButton(f'UNIT {i + 1}', checked=(i == 0), w=80, h=30)
+            b.toggled.connect(lambda _, k=i: self.select_unit(k))
+            ub.addWidget(b)
+            self.unitbtn.append(b)
+        rl.addLayout(ub)
         self.rail = ChannelRail()
         rl.addWidget(self.rail)
         railp.setFixedWidth(196)
@@ -927,13 +959,14 @@ class Main(QWidget):
             self.demo_tick()
         else:
             from octa_link import Link
-            self.link = Link()
-            self.strip.link = self.link
-            self.link.status.connect(self.header.set_status)
-            self.link.meters.connect(self.on_meters)
-            self.link.preamp.connect(self.strip.on_preamp)
-            self.link.flags.connect(self.strip.on_flags)
-            self.link.start()
+            for i, u in enumerate(self.units):
+                L = u['link'] = Link(i)
+                L.status.connect(lambda t, o, k=i: self.header.unit_status(k, t, o))
+                L.meters.connect(lambda db, gr, k=i: k == self.cur and self.on_meters(db, gr))
+                L.preamp.connect(lambda ch, g, ph, k=i: k == self.cur and self.strip.on_preamp(ch, g, ph))
+                L.flags.connect(lambda fl, k=i: self.on_flags(k, fl))
+                L.start()
+            self.strip.link = self.units[0]['link']
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -946,8 +979,30 @@ class Main(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(rr, 12 - k, 12 - k)
 
+    def select_unit(self, k):
+        self.cur = k
+        for i, b in enumerate(self.unitbtn):
+            b.checked = i == k
+            b.update()
+        u = self.units[k]
+        self.chans = u['chans']
+        self.strip.chans = u['chans']
+        self.strip.link = u['link']
+        self.rail.set_unit(k)
+        self.strip.show_chan(self.strip.ch)
+        for m in self.rail.meters:
+            m.level = 0
+            m.update()
+
+    def on_flags(self, k, fl):
+        for ch, on in enumerate(fl):
+            for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp'):
+                self.units[k]['chans'][ch]['on'][b] = b in on
+        if k == self.cur:
+            self.strip.show_chan(self.strip.ch)
+
     def retitle(self):
-        self.strip.eqp.title = 'EQ   ·   ' + self.rail.label(self.strip.ch)
+        self.strip.eqp.title = f'EQ   ·   UNIT {self.cur + 1}   ·   ' + self.rail.label(self.strip.ch)
         self.strip.eqp.update()
 
     def on_meters(self, db, gr):
@@ -960,8 +1015,9 @@ class Main(QWidget):
         self.strip.inlab.setText('IN  %s' % ('%.1f dB' % d if d > -100 else '--'))
 
     def closeEvent(self, e):
-        if hasattr(self, 'link'):
-            self.link.stop = True
+        for u in self.units:
+            if u['link']:
+                u['link'].stop = True
         super().closeEvent(e)
 
     def demo_tick(self):

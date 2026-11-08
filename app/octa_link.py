@@ -1,4 +1,5 @@
-"""Device link for Rosetta Control: one worker thread owns the OCTA's CTRL MIDI port.
+"""Device link for Rosetta Octa Control: one worker thread per unit owns that OCTA's CTRL MIDI port
+(unit n = the n-th CTRL port in name order, like octa_lab.py --unit).
 
 - Strip DSP: tools/octa_lab.py Strip (lab SysEx F0 7D 4F): EQ biquads via the mailbox, tube, comp, block flags.
 - Preamp gain / 48V: written with Roland's own DT1 (re/CTRL_PROTOCOL.md 3.1: 00 05 c 04 SENS raw 0..100,
@@ -37,8 +38,9 @@ class Link(QObject):
     preamp = Signal(int, int, int)             # ch, gain raw (half dB), 48V
     flags = Signal(list)                       # per channel: set of block names that are on in the unit
 
-    def __init__(self):
+    def __init__(self, unit=0):
         super().__init__()
+        self.unit = unit
         self.pending = {}
         self.lock = threading.Lock()
         self.watch = 0
@@ -91,7 +93,7 @@ class Link(QObject):
 
     def connect(self):
         import octa_lab
-        self.lab = octa_lab.Lab()
+        self.lab = octa_lab.Lab(unit=self.unit)
         self.strip = octa_lab.Strip(self.lab)
         try:
             self.fs = self.strip.fs
