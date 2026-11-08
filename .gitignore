@@ -12,6 +12,9 @@
 !/re/
 !/patches/
 !/app/
+!/dual/
+/dual/_sdk/
+/dual/build/
 /patches/*
 !/patches/*.S
 !/patches/*.c
