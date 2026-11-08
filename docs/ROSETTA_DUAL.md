@@ -46,6 +46,19 @@ Status: **Windows driver v0 runs on the two units** (2026-11-08). Measured facts
   exclusive path itself is not sample-exact between streams. Sample-locked two-unit recording without a reference
   signal is not possible on this driver; a loose sync (a few ms, no slow drift) is.
 
+## Third round: our own USB path (WinUSB, 2026-11-08)
+Both units on WinUSB (Zadig; serials ISRL89F2C5C5, ISRL91AA2FC4). Tools: `dual/build_usb.cmd`, `usbprobe`, `usbdual`.
+- Protocol as in Linux `sound/usb/quirks-table.h` / `quirks.c` (0582:0120), confirmed by the descriptors **M**:
+  - iface 0 playback ep 0x05 (iso async, 10 ch), iface 1 capture ep 0x85 (iso async, implicit feedback, 12 ch), S24_3LE;
+    alt 1/2/3/4 = 44.1/48/96/192 kHz (4 ch at 192k); iface 2 MIDI (06/86), iface 3-4 interrupt.
+  - Rate: vendor request 3, read wValue 1 = rate (24-bit LE) + status; write wValue 8 = `40` + rate.
+- Both captures streamed together, 480,000 microframes, **0 errors**, each within +-1 sample of a straight line. **M**
+- **The "-123 ppm" was the USB controllers, not the boxes.** Controller of unit 1 runs +121.9 ppm vs the PC clock,
+  controller of unit 2 -1.1 ppm. Corrected to PC time the boxes differ by **-2.0 ppm**, which agrees with the 2.4 ppm
+  measured from the audio. **M**
+- So sample counts per USB tick + each controller's frame clock (WinUsb_GetCurrentFrameNumber, 8-23 us residual) give the
+  exact relation between the boxes. Next: playback (implicit feedback), then the engine under the ASIO driver.
+
 ## Linux and macOS
 - **The core (`dual/src/core`) is plain C++17 with no OS code.** The Linux/macOS front ends reuse it.
 - **Linux (plan):** PipeWire already does what Rosetta Dual does: it resamples a follower device onto the driver's
