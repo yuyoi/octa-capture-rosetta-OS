@@ -1,12 +1,14 @@
 """Rosetta Control: the PC editor for the OCTA-CAPTURE running Rosetta OS (replaces Roland's Control Panel).
 Look: modelled on the unit's front panel: black, silver outlines, a bit of grey, blue buttons, the violet-on-white LCD.
 
-v0 = UI skeleton in offline demo mode (no device I/O yet): STRIP page per channel (EQ curve you drag, silver knobs,
-blue-tube TUBE block that glows with DRIVE, COMP with GR meter), channel rail with meters, page buttons.
-Next: device link (strip block via the lab, Roland params via the CTRL SysEx map in re/CTRL_PROTOCOL.md).
+v1 = live STRIP page (app/octa_link.py): the EQ curve you drag, silver knobs, the blue tube that glows with DRIVE,
+COMP with the unit's real GR, preamp GAIN + 48V (Roland's own DT1), the 8 real input meters.
+Blocks start as the unit has them (read on connect); a block's settings are sent when you turn it on or touch it.
+MIXER / ROUTING / REVERB / SYSTEM pages: next (re/CTRL_PROTOCOL.md).
 
-python -I app/rosetta_control.py            run
-python -I app/rosetta_control.py --shot F  render one frame offscreen to F (PNG) and quit
+python -I app/rosetta_control.py            run (connects to the OCTA; close Roland's Control Panel first)
+python -I app/rosetta_control.py --demo     no device, fake meters
+python -I app/rosetta_control.py --shot F  render one demo frame offscreen to F (PNG) and quit
 """
 import math
 import os
@@ -79,8 +81,14 @@ def mag_db(stages, f):
 
 
 # ---------------- channel state (mirrors patches/page.c tables) ----------------
-def default_chan():
-    return dict(on={'hpf': True, 'low': True, 'peak': True, 'high': True, 'tube': True, 'comp': True, 'gate': False},
+KEY_BLOCK = dict(hpf_f='hpf', low_f='low', low_g='low', peak_f='peak', peak_g='peak', peak_q='peak', high_f='high',
+                 high_g='high', drive='tube', bias='tube', tube_out='tube', thresh='comp', ratio='comp', attack='comp',
+                 release='comp', makeup='comp')
+
+
+def default_chan(demo=False):
+    return dict(on={k: demo and k != 'gate' for k in ('hpf', 'low', 'peak', 'high', 'tube', 'comp', 'gate')},
+                pre_gain=17.0, ph48=False,
                 gain=34.0, hpf_f=80.0, low_f=120.0, low_g=2.0, peak_f=2500.0, peak_g=-3.0, peak_q=1.2, high_f=8000.0,
                 high_g=3.5, drive=9.0, bias=0.2, tube_out=0.0, thresh=-18.0, ratio=4.0, attack=10.0, release=150.0,
                 makeup=2.0)
@@ -455,6 +463,11 @@ class Header(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(58)
+        self.text, self.online = 'OFFLINE DEMO', False
+
+    def set_status(self, text, online):
+        self.text, self.online = text, online
+        self.update()
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -475,16 +488,16 @@ class Header(QWidget):
         p.setPen(GREY_T)
         p.drawText(QRectF(320, 22, 300, 20), Qt.AlignLeft | Qt.AlignVCenter, 'OCTA-CAPTURE  ·  ROSETTA OS')
         p.setPen(Qt.NoPen)                                                     # status LED
-        p.setBrush(QColor('#ffb14a'))
-        p.drawEllipse(QPointF(r.right() - 150, 30), 5, 5)
+        p.setBrush(BLUE_LIT if self.online else QColor('#ffb14a'))
+        p.drawEllipse(QPointF(r.right() - 330, 30), 5, 5)
         p.setPen(TEXT)
-        p.drawText(QRectF(r.right() - 138, 20, 130, 20), Qt.AlignLeft | Qt.AlignVCenter, 'OFFLINE DEMO')
+        p.drawText(QRectF(r.right() - 318, 20, 310, 20), Qt.AlignLeft | Qt.AlignVCenter, self.text)
 
 
 class StripPage(QWidget):
     def __init__(self, chans, parent=None):
         super().__init__(parent)
-        self.chans, self.ch = chans, 0
+        self.chans, self.ch, self.link = chans, 0, None
         c = chans[0]
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -507,7 +520,7 @@ class StripPage(QWidget):
         ev = QVBoxLayout(eqp)
         ev.setContentsMargins(14, 30, 14, 10)
         self.eq = LcdEq(c)
-        self.eq.edited.connect(self.sync_knobs)
+        self.eq.edited.connect(self.eq_edited)
         ev.addWidget(self.eq, 1)
         kr = QHBoxLayout()
         self.k = {}
@@ -528,9 +541,25 @@ class StripPage(QWidget):
             kr.addWidget(knob(key, *args, size=52))
         ev.addLayout(kr)
         mid.addWidget(eqp, 1)
-        # right column: tube + comp
+        # right column: preamp + tube + comp
         right = QVBoxLayout()
         right.setSpacing(10)
+        pp = Panel('PREAMP')
+        pl = QHBoxLayout(pp)
+        pl.setContentsMargins(14, 26, 14, 8)
+        self.gain = Knob('GAIN', 0, 50, c['pre_gain'], '{:.1f}', ' dB', size=52)
+        self.gain.changed.connect(self.gain_turned)
+        pl.addWidget(self.gain)
+        pv = QVBoxLayout()
+        self.b48 = BlueButton('+48V', checked=c['ph48'], w=74, h=30)
+        self.b48.toggled.connect(self.ph48_toggled)
+        pv.addWidget(self.b48)
+        self.inlab = QLabel('IN  --')
+        self.inlab.setStyleSheet('color:#c9ced4;font:bold 13px "Segoe UI";')
+        pv.addWidget(self.inlab)
+        pl.addLayout(pv)
+        pl.addStretch(1)
+        right.addWidget(pp)
         tp = Panel('TUBE')
         tl = QHBoxLayout(tp)
         tl.setContentsMargins(14, 30, 14, 12)
@@ -568,15 +597,59 @@ class StripPage(QWidget):
         root.addLayout(mid, 1)
         self.refresh_tube()
 
+    def push(self, block):
+        c = self.chans[self.ch]
+        if self.link and block != 'gate':
+            self.link.set_block(self.ch, block, c['on'][block], dict(c))
+
     def set_on(self, k, v):
         self.chans[self.ch]['on'][k] = v
+        self.push(k)
         self.eq.update()
         self.refresh_tube()
 
     def set_val(self, k, v):
-        self.chans[self.ch][k] = v
+        c = self.chans[self.ch]
+        c[k] = v
+        if c['on'][KEY_BLOCK[k]]:
+            self.push(KEY_BLOCK[k])
         self.eq.update()
         self.refresh_tube()
+
+    def eq_edited(self):
+        self.sync_knobs()
+        for b in ('hpf', 'low', 'peak', 'high'):
+            if self.chans[self.ch]['on'][b]:
+                self.push(b)
+
+    def gain_turned(self, v):
+        v = round(v * 2) / 2
+        self.chans[self.ch]['pre_gain'] = v
+        if self.link:
+            self.link.set_gain(self.ch, round(v * 2))
+
+    def ph48_toggled(self, on):
+        self.chans[self.ch]['ph48'] = on
+        if self.link:
+            self.link.set_48v(self.ch, on)
+
+    def on_preamp(self, ch, raw, ph):
+        if ch != self.ch:
+            return
+        c = self.chans[ch]
+        if self.gain._drag is None:
+            c['pre_gain'] = raw / 2
+            self.gain.val = raw / 2
+            self.gain.update()
+        c['ph48'] = bool(ph)
+        self.b48.checked = bool(ph)
+        self.b48.update()
+
+    def on_flags(self, fl):
+        for ch, on in enumerate(fl):
+            for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp'):
+                self.chans[ch]['on'][b] = b in on
+        self.show_chan(self.ch)
 
     def sync_knobs(self):
         for key, w in self.k.items():
@@ -590,7 +663,13 @@ class StripPage(QWidget):
 
     def show_chan(self, k):
         self.ch = k
+        if self.link:
+            self.link.watch = k
         c = self.chans[k]
+        self.gain.val = c['pre_gain']
+        self.gain.update()
+        self.b48.checked = c['ph48']
+        self.b48.update()
         self.eq.c = c
         for key, b in self.blk.items():
             b.checked = c['on'][key]
@@ -601,19 +680,20 @@ class StripPage(QWidget):
 
 
 class Main(QWidget):
-    def __init__(self):
+    def __init__(self, demo=False):
         super().__init__()
         self.setWindowTitle('Rosetta Control')
-        self.resize(1360, 820)
+        self.resize(1360, 900)
         pal = self.palette()
         pal.setColor(self.backgroundRole(), PANEL)
         self.setPalette(pal)
         self.setAutoFillBackground(True)
-        self.chans = [default_chan() for _ in range(8)]
+        self.chans = [default_chan(demo) for _ in range(8)]
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(Header())
+        self.header = Header()
+        root.addWidget(self.header)
         body = QHBoxLayout()
         body.setContentsMargins(14, 14, 14, 14)
         body.setSpacing(14)
@@ -641,10 +721,34 @@ class Main(QWidget):
         root.addLayout(body, 1)
         self.rail.picked.connect(self.strip.show_chan)
         self.t = 0
-        self.timer = QTimer(self)                     # demo meters until the device link exists
-        self.timer.timeout.connect(self.demo_tick)
-        self.timer.start(50)
-        self.demo_tick()
+        if demo:
+            self.timer = QTimer(self)
+            self.timer.timeout.connect(self.demo_tick)
+            self.timer.start(50)
+            self.demo_tick()
+        else:
+            from octa_link import Link
+            self.link = Link()
+            self.strip.link = self.link
+            self.link.status.connect(self.header.set_status)
+            self.link.meters.connect(self.on_meters)
+            self.link.preamp.connect(self.strip.on_preamp)
+            self.link.flags.connect(self.strip.on_flags)
+            self.link.start()
+
+    def on_meters(self, db, gr):
+        for i, m in enumerate(self.rail.meters):
+            m.level = min(1.0, max(0.0, (db[i] + 60) / 60))
+            m.update()
+        self.strip.gr.level = min(1.0, max(0.0, gr / 20))
+        self.strip.gr.update()
+        d = db[self.strip.ch]
+        self.strip.inlab.setText('IN  %s' % ('%.1f dB' % d if d > -100 else '--'))
+
+    def closeEvent(self, e):
+        if hasattr(self, 'link'):
+            self.link.stop = True
+        super().closeEvent(e)
 
     def demo_tick(self):
         self.t += 1
@@ -656,8 +760,9 @@ class Main(QWidget):
 
 
 def main():
+    sys.path.insert(0, HERE)
     app = QApplication(sys.argv[:1])
-    w = Main()
+    w = Main(demo='--demo' in sys.argv or '--shot' in sys.argv)
     if '--shot' in sys.argv:
         out = sys.argv[sys.argv.index('--shot') + 1]
         w.show()
