@@ -39,14 +39,19 @@ A PC editor for the OCTA-CAPTURE running Rosetta OS, styled after the unit's fro
 - **Tube** (glows brighter with DRIVE) and **compressor** with the unit's real gain-reduction meter.
 - **Preamp gain + 48V** through Roland's own protocol (decoded in [re/CTRL_PROTOCOL.md](re/CTRL_PROTOCOL.md)), live input meters.
 - **Rosetta amp head** for guitar: CLEAN / CRUNCH / LEAD / CRANKED / FUZZ channels, HARD CLIP, GAIN-BASS-MIDDLE-TREBLE-PRESENCE-MASTER, and a ROSETTA FX section (GATE, ECHO, TIME, REVERB). It runs in the box's DSP, not on the PC, so it adds no delay.
-- **Tone presets:** six factory tones (HOLY WARS, FUNERALOPOLIS, FLOODS, DETROIT SOLO, CROWBAR, SABBATH) plus as many of your own as you like, saved on the PC. Click the amp's screen.
+- **Patches for mic and guitar:** tap PATCH on the strip page for one screen with every patch; a tap loads it on the spot.
+  - MIC (Sennheiser e935): E935 VOCAL, VOCAL, DOOM CHANT, SCREAM, GROWL, BACKING VOX, TALK, RADIO, CAB MIC.
+  - GUITAR DI (amp off): REAMP DI, CLEAN DI, LES PAUL DI, GUITAR DI, NECK JAZZ, FLAT.
+  - GUITAR AMP: ten tones, from GLASS CLEAN, DOOM CLEAN, BLUES BREAK and PLEXI up to HOLY WARS, FUNERALOPOLIS, FLOODS, DETROIT SOLO, CROWBAR and SABBATH. All are levelled to the same peak in the C model of the box.
+  - Save as many of your own as you like on the PC. The preamp gain is never touched.
+  - The gate parts need test/strip10; on older firmware the app says so on the key.
 - **DSP bar:** shows live how much of the box's DSP is in use. It refuses an add that would go past 80 % ("FULL · REMOVE SOMETHING"), and its task list switches anything off with one X.
 - **Touch-friendly:** 40 px buttons and big EQ nodes you can grab from a finger-width away. Slide sideways off a knob for fine steps. Hold an input for its menu.
 - Mixer and routing pages and a scene-bank panel are next.
 
 <p align="center"><img src="docs/img/rosetta_amp_head.png" width="820" alt="Rosetta amp head in Rosetta Octa Control: FUNERALOPOLIS fuzz tone with HARD CLIP, tube window, gain/tone knobs and the ROSETTA FX gate, echo and reverb"></p>
 
-- **One-tap REC** and ready-made chains (VOCAL, GUITAR, FLAT).
+- **One-tap REC.**
 - **MIC** button: corrects an input for its microphone ([docs/MIC_COMP.md](docs/MIC_COMP.md)).
 - **MONITOR OTHER BOX** and **AMP** buttons. Monitoring two boxes is its own topic, because anything through the PC has delay: [docs/MONITORING.md](docs/MONITORING.md). How the amp works: [docs/AMP.md](docs/AMP.md).
 

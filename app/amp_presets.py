@@ -60,6 +60,22 @@ FACTORY = [
       'Treble booster into an old head: lows cut before the 2nd stage, mid-heavy, raw uneven clipping.',
       fx=(0.0, 6.0, 2.0), gate=5.0, rev_size=0.5, rev_damp=0.5,
       tight=240, pre=6000, b1=0.35, b2=0.2, split=0.5, res=95, lp1=5000, lp2=7000, mid_f=800, mid_q=0.7),
+    P('GLASS CLEAN', 'clean', 3.0, 4.5, 5.0, 6.5, 6.5, 7.6, False,
+      'Clean and bright: low gain, open top, a short slapback and some room. No gate, so chords ring out.',
+      fx=(2.0, 3.0, 4.5), gate=0.0, echo_fb=0.15, echo_tone=6000, rev_size=0.5, rev_damp=0.3,
+      tight=60, pre=11000, b1=0.05, b2=0.05, split=0.6, res=90, lp1=7500, lp2=10000, mid_f=700, mid_q=0.7),
+    P('DOOM CLEAN', 'clean', 5.0, 7.0, 4.5, 3.5, 3.5, 5.6, False,
+      'Dark clean for slow arpeggios: thick low end, top rolled off, long dark echo into a big reverb.',
+      fx=(4.0, 7.5, 7.0), gate=3.0, echo_fb=0.45, echo_tone=1800, rev_size=0.9, rev_damp=0.7,
+      tight=40, pre=6000, b1=0.15, b2=0.1, split=0.5, res=70, lp1=4500, lp2=6000, mid_f=600, mid_q=0.7),
+    P('BLUES BREAK', 'crunch', 5.0, 5.0, 6.5, 6.0, 5.5, 5.9, False,
+      'Edge of breakup: cleans up when you play soft, bites when you dig in. Mids forward, a touch of echo.',
+      fx=(2.5, 5.5, 2.5), gate=0.0, echo_fb=0.25, echo_tone=3000, rev_size=0.5, rev_damp=0.5,
+      tight=90, pre=7000, b1=0.3, b2=0.15, split=0.5, res=95, lp1=5200, lp2=7500, mid_f=750, mid_q=0.8),
+    P('PLEXI', 'cranked', 8.0, 5.5, 7.0, 6.5, 6.0, 4.8, False,
+      'Old British head flat out: big mids, crunchy chords, uneven bias for even harmonics. Classic rock rhythm.',
+      fx=(0.0, 6.0, 2.0), gate=4.0, rev_size=0.5, rev_damp=0.5,
+      tight=120, pre=7000, b1=0.3, b2=0.2, split=0.5, res=100, lp1=5500, lp2=7500, mid_f=850, mid_q=0.8),
 ]
 
 
@@ -129,3 +145,5 @@ def apply(c, p):
     c['amp_preset'] = p['name']
     c.pop('amp_edited', None)
     c['on'].update(tube=False, comp=False)
+    if c.get('patch'):                                  # the strip patch under the amp no longer runs as saved
+        c['patch_edited'] = True

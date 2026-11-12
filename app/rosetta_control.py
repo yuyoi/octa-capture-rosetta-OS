@@ -28,25 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ART = os.path.join(HERE, '..', 'art', 'app')
 RECORDINGS = os.environ.get('RD_RECDIR', r'E:\skriv 2026\recordings')   # same folder as the old OCTA REC
 
-# ready-made chains (starting points; same parameters as the knobs)
-_ALL = ('hpf', 'low', 'peak', 'high', 'tube', 'comp')
-PRESETS = {
-    'vocal': dict(on=_ALL, track=('Vocal', 'vocal'), hpf_f=90.0, low_f=200.0, low_g=-1.5, peak_f=3000.0, peak_g=2.0, peak_q=1.0,
-                  high_f=10000.0, high_g=2.5, drive=6.0, bias=0.20, tube_out=0.0, thresh=-18.0, ratio=3.0, attack=10.0,
-                  release=120.0, makeup=3.0),
-    'guitar': dict(on=_ALL, track=('Guitar', 'guitar'), hpf_f=80.0, low_f=200.0, low_g=-2.0, peak_f=2500.0, peak_g=2.0, peak_q=1.0,
-                   high_f=7000.0, high_g=-3.0, drive=12.0, bias=0.30, tube_out=0.0, thresh=-20.0, ratio=4.0, attack=20.0,
-                   release=150.0, makeup=3.0),
-    # Sennheiser e935: dynamic with its own presence lift, so the mud comes out and the top stays nearly alone
-    'e935': dict(on=_ALL, track=('Vocal', 'vocal'), hpf_f=100.0, low_f=250.0, low_g=-2.0, peak_f=400.0, peak_g=-2.5, peak_q=1.2,
-                 high_f=11000.0, high_g=1.5, drive=3.0, bias=0.15, tube_out=0.0, thresh=-20.0, ratio=3.0, attack=8.0,
-                 release=110.0, makeup=3.0),
-    # Les Paul bridge humbucker, direct: tame the 3 kHz bite, roll the top off like a speaker would, soft tube, slow comp
-    'lespaul': dict(on=_ALL, track=('Guitar', 'guitar'), hpf_f=80.0, low_f=200.0, low_g=-1.0, peak_f=3200.0, peak_g=-3.0, peak_q=1.4,
-                    high_f=6000.0, high_g=-6.0, drive=10.0, bias=0.30, tube_out=0.0, thresh=-22.0, ratio=3.0, attack=25.0,
-                    release=180.0, makeup=4.0),
-    'flat': dict(on=()),
-}
+NO_FW = "NOT ON THIS BOX'S FIRMWARE: flash test/strip10"     # said on every control the running firmware can't do
 
 # ---------------- palette (OCTA-CAPTURE front panel) ----------------
 PANEL = QColor('#0c0d0f')
@@ -166,10 +148,21 @@ class BlueButton(QWidget):
     def __init__(self, text, checkable=True, checked=False, w=64, h=30, parent=None):
         super().__init__(parent)
         self.text, self.checkable, self.checked = text, checkable, checked
+        self.blocked = None                        # a reason: the running firmware can't do this, the key says so
         self.setFixedSize(w, h)
         self.setCursor(Qt.PointingHandCursor)
 
+    def set_blocked(self, why):
+        if why != self.blocked:
+            self.blocked = why
+            self.setToolTip(why or '')
+            self.update()
+
     def mousePressEvent(self, e):
+        if self.blocked:
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.showText(e.globalPosition().toPoint(), self.blocked, self)
+            return
         if self.checkable:
             self.checked = not self.checked
             self.toggled.emit(self.checked)
@@ -199,6 +192,16 @@ class BlueButton(QWidget):
         p.setBrush(g)
         p.setPen(QPen(QColor(0, 0, 0, 120), 1))
         p.drawRoundedRect(r, 3.5, 3.5)
+        if self.blocked:                                                   # dead key: dark, NO FW under the name
+            p.setBrush(QColor('#3a3d42'))
+            p.drawRoundedRect(r, 3.5, 3.5)
+            p.setPen(QColor('#8d939b'))
+            p.setFont(font(11, True))
+            p.drawText(r.adjusted(0, 2, 0, -r.height() / 2 + 2), Qt.AlignCenter, self.text)
+            p.setPen(HOT)
+            p.setFont(font(9, True))
+            p.drawText(r.adjusted(0, r.height() / 2 - 2, 0, -2), Qt.AlignCenter, 'NO FW')
+            return
         p.setPen(QColor('#ffffff') if self.checked else QColor('#24272b'))
         p.setFont(font(12, True))
         p.drawText(r, Qt.AlignCenter, self.text)
@@ -886,7 +889,8 @@ def mic_overlay(c):
 
 
 class StripPage(QWidget):
-    preset = Signal(str)
+    preset = Signal(str)                              # a strip patch or amp tone by name (strip_patches / amp_presets)
+    patches = Signal()                                # open the patch browser
     amp = Signal(str)
     amp_knob = Signal(str, float)                     # amp head knob: key, 0-10
     dirty = Signal()                                  # something worth saving changed
@@ -909,10 +913,14 @@ class StripPage(QWidget):
             blocks.addWidget(b)
             self.blk[k] = b
         blocks.addStretch(1)
-        for name in ('vocal', 'guitar', 'flat'):         # ready-made chains for the shown input
-            b = BlueButton(name.upper(), w=74, h=TOUCH_H)
-            b.toggled.connect(lambda _, n=name, btn=b: (setattr(btn, 'checked', False), btn.update(), self.preset.emit(n)))
-            blocks.addWidget(b)
+        self.patch_btn = QPushButton('PATCH')           # mic + guitar patches for the shown input (tap = browser)
+        self.patch_btn.setFixedSize(210, TOUCH_H)
+        self.patch_btn.setStyleSheet('QPushButton{color:#62b2ff;background:#070a10;border:2px solid #8c9299;border-radius:4px;'
+                                     'font:bold 12px "Segoe UI";text-align:left;padding-left:10px;}'
+                                     'QPushButton:pressed{background:#1f4fa8;color:#fff;}')
+        self.patch_btn.setToolTip('patches for this input: mic (e935) and guitar, DI chains and amp tones; save your own')
+        self.patch_btn.clicked.connect(self.patches.emit)
+        blocks.addWidget(self.patch_btn)
         self.amp_btn = QPushButton('AMP OFF')            # click = next amp voice for the shown input
         self.amp_btn.setFixedSize(112, TOUCH_H)
         self.amp_btn.setStyleSheet('QPushButton{color:#c9ced4;background:#2a2d31;border:1px solid #4a4f55;border-radius:4px;'
@@ -1034,7 +1042,22 @@ class StripPage(QWidget):
         self.push(k)
         self.eq.update()
         self.refresh_tube()
+        self.patch_edited()
         self.dirty.emit()
+
+    def patch_edited(self):
+        c = self.chans[self.ch]
+        if c.get('patch') and not c.get('patch_edited'):
+            c['patch_edited'] = True
+            self.show_patch()
+
+    def show_patch(self):
+        c = self.chans[self.ch]
+        if c.get('amp', 'off') != 'off':
+            name, ed = c.get('amp_preset') or 'AMP ' + c['amp'].upper(), c.get('amp_edited')
+        else:
+            name, ed = c.get('patch') or '-', c.get('patch_edited')
+        self.patch_btn.setText(f'PATCH  {name}' + ('  *' if ed else ''))
 
     def set_val(self, k, v):
         c = self.chans[self.ch]
@@ -1043,6 +1066,7 @@ class StripPage(QWidget):
             self.push(KEY_BLOCK[k])
         self.eq.update()
         self.refresh_tube()
+        self.patch_edited()
         self.dirty.emit()
 
     def eq_edited(self):
@@ -1050,6 +1074,7 @@ class StripPage(QWidget):
         for b in ('hpf', 'low', 'peak', 'high'):
             if self.chans[self.ch]['on'][b]:
                 self.push(b)
+        self.patch_edited()
         self.dirty.emit()
 
     def gain_turned(self, v):
@@ -1129,8 +1154,150 @@ class StripPage(QWidget):
             b.setVisible(not (amp_on and key in ('low', 'peak', 'high')))     # in amp mode those are the amp's tone knobs
             b.update()
         self.sync_knobs()
+        self.show_patch()
         self.eq.update()
         self.refresh_tube()
+
+
+class PatchBrowser(QDialog):
+    """every patch for the shown input on one screen: MIC (e935), GUITAR DI, GUITAR AMP tones, YOURS.
+    One tap loads it straight away and the window stays open, so you can tap through them while you play."""
+    COLS = (('MIC', 'MIC  ·  e935'), ('GUITAR', 'GUITAR  ·  DI'), ('AMP', 'GUITAR  ·  AMP'), ('USER', 'YOURS'))
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win, self.fx_ok, self.btns = win, None, {}
+        self.setWindowTitle('Patches')
+        self.setStyleSheet(
+            'QDialog{background:#0c0d0f;} QLabel{color:#c9ced4;font:bold 12px "Segoe UI";}'
+            'QLabel#col{color:#8d939b;font:bold 12px "Segoe UI";letter-spacing:1px;}'
+            'QLabel#who{color:#62b2ff;font:bold 15px "Segoe UI";}'
+            'QLabel#fw{color:#ff5a4a;font:bold 13px "Segoe UI";border:1px solid #ff5a4a;border-radius:4px;padding:6px;}'
+            'QLabel#note{color:#62b2ff;background:#070a10;border:1px solid #2a3a52;border-radius:4px;padding:8px;'
+            'font:bold 13px "Segoe UI";}'
+            'QPushButton{background:#b4b8bd;color:#24272b;border:2px solid #d6d9dd;border-radius:5px;padding:4px 10px;'
+            'font:bold 13px "Segoe UI";text-align:left;}'
+            'QPushButton:checked{background:#2a6fe0;color:#fff;border-color:#bfe3ff;}'
+            'QPushButton#tool{text-align:center;padding:10px 16px;}'
+            'QPushButton:disabled{background:#3a3d42;color:#6d737b;border-color:#4a4f55;}')
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        self.who = QLabel()
+        self.who.setObjectName('who')
+        root.addWidget(self.who)
+        self.fw = QLabel("GATE, ECHO, REVERB and HARD CLIP in these patches do nothing on this box's firmware:"
+                         " flash test/strip10 to hear them. EQ, tube, comp and the amp work now.")
+        self.fw.setObjectName('fw')
+        self.fw.setWordWrap(True)
+        self.fw.hide()
+        root.addWidget(self.fw)
+        grid = QHBoxLayout()
+        grid.setSpacing(14)
+        self.col = {}
+        for key, title in self.COLS:
+            v = QVBoxLayout()
+            v.setSpacing(6)
+            t = QLabel(title)
+            t.setObjectName('col')
+            v.addWidget(t)
+            box = QVBoxLayout()
+            box.setSpacing(6)
+            v.addLayout(box)
+            v.addStretch(1)
+            grid.addLayout(v, 1)
+            self.col[key] = box
+        root.addLayout(grid, 1)
+        self.note = QLabel()
+        self.note.setObjectName('note')
+        self.note.setWordWrap(True)
+        self.note.setMinimumHeight(54)
+        root.addWidget(self.note)
+        row = QHBoxLayout()
+        self.save_b = QPushButton('SAVE AS YOURS...')
+        self.del_b = QPushButton('DELETE')
+        close = QPushButton('CLOSE')
+        for b in (self.save_b, self.del_b, close):
+            b.setObjectName('tool')
+            b.setMinimumHeight(TOUCH_H + 4)
+        self.save_b.clicked.connect(self.ask_save)
+        self.del_b.clicked.connect(self.ask_delete)
+        close.clicked.connect(self.close)
+        row.addWidget(self.save_b)
+        row.addWidget(self.del_b)
+        row.addStretch(1)
+        row.addWidget(close)
+        root.addLayout(row)
+        self.resize(1000, 640)
+
+    def set_fx_ok(self, ok):
+        self.fx_ok = ok
+        self.fw.setVisible(ok is False)
+
+    def chan(self):
+        return self.win.units[self.win.cur]['chans'][self.win.strip.ch]
+
+    def current(self):
+        c = self.chan()
+        return (c.get('amp_preset'), c.get('amp_edited')) if c.get('amp', 'off') != 'off' else (c.get('patch'), c.get('patch_edited'))
+
+    def items(self):
+        """(column, name, note, uses the gate/FX, is yours)"""
+        import amp_presets
+        import strip_patches
+        out = [(p['group'], p['name'], p['note'], p['gate'] is not None, False) for p in strip_patches.FACTORY]
+        out += [('AMP', p['name'], p['note'], True, False) for p in amp_presets.FACTORY]
+        out += [('USER', p['name'], p['note'] or 'your patch', p['gate'] is not None, True) for p in strip_patches.load_user()]
+        out += [('USER', p['name'], p['note'] or 'your amp tone', True, True) for p in amp_presets.load_user()]
+        return out
+
+    def refresh(self):
+        for box in self.col.values():
+            while box.count():
+                w = box.takeAt(0).widget()
+                if w:
+                    w.hide()                                   # gone now, not at the next event loop turn
+                    w.deleteLater()
+        self.btns, self.notes, self.mine = {}, {}, set()
+        cur, edited = self.current()
+        for col, name, note, fx, mine in self.items():
+            b = QPushButton(name + ('   + GATE' if fx and col in ('MIC', 'GUITAR', 'USER') and not mine else ''))
+            b.setCheckable(True)
+            b.setChecked(name == cur)
+            b.setMinimumHeight(TOUCH_H + 4)
+            b.setToolTip(note)
+            b.clicked.connect(lambda _=False, n=name: self.pick(n))
+            self.col[col].addWidget(b)
+            self.btns[name], self.notes[name] = b, note
+            if mine:
+                self.mine.add(name)
+        if not any(m for m in self.mine):
+            t = QLabel('none yet: set an input up,\nthen SAVE AS YOURS')
+            t.setObjectName('col')
+            self.col['USER'].addWidget(t)
+        tracks = load_tracks(self.win.cur)
+        nm = (tracks[self.win.strip.ch].get('name') or '').upper()
+        self.who.setText(f'UNIT {self.win.cur + 1}  ·  INPUT {self.win.strip.ch + 1}' + (f'  ·  {nm}' if nm else '')
+                         + (f'      now: {cur}' + (' (edited)' if edited else '') if cur else ''))
+        self.note.setText(self.notes.get(cur, 'Tap a patch: it loads on this input straight away. The preamp gain stays where it is.'))
+        self.del_b.setEnabled(cur in self.mine)
+
+    def pick(self, name):
+        self.win.apply_preset(self.win.cur, self.win.strip.ch, name)
+        self.refresh()
+
+    def ask_save(self):
+        from PySide6.QtWidgets import QInputDialog
+        cur, edited = self.current()
+        name, ok = QInputDialog.getText(self, 'Save patch', 'Name:', text=cur if cur in self.mine else '')
+        if ok and name.strip():
+            self.win.save_patch(self.win.cur, self.win.strip.ch, name.strip())
+            self.refresh()
+
+    def ask_delete(self):
+        cur, _ = self.current()
+        if cur in self.mine:
+            self.win.delete_patch(cur)
+            self.refresh()
 
 
 class RecButton(QWidget):
@@ -1334,6 +1501,8 @@ class Main(QWidget):
         self.rec_timer = QTimer(self)
         self.rec_timer.timeout.connect(self.rec_tick)
         self.strip.preset.connect(lambda name: self.apply_preset(self.cur, self.strip.ch, name))
+        self.strip.patches.connect(self.patch_browser)
+        self.patch_win = None
         self.strip.amp.connect(lambda v: self.set_amp(self.cur, self.strip.ch, v))
         self.do_timer = QTimer(self)
         self.do_timer.timeout.connect(self.poll_do)
@@ -1548,36 +1717,99 @@ class Main(QWidget):
         self.feed_dev = None if self.feed_dev else self.feed_dev   # new device: restart the sending
         self.apply_stream()
 
-    # ---------------- ready-made chains ----------------
+    # ---------------- patches (strip_patches.py + amp_presets.py) ----------------
     def apply_preset(self, unit, ch, name):
-        p = PRESETS[name]
+        """a strip patch (amp off) or an amp tone, by name, onto one input"""
+        import amp_presets
+        import strip_patches
+        p = strip_patches.find(name)
+        if not p:
+            if amp_presets.find(name):
+                self.load_amp_preset(unit, ch, name)
+                if self.patch_win:
+                    self.patch_win.refresh()
+            return
         c = self.units[unit]['chans'][ch]
 
         def change(n):
             n['amp'] = 'off'
-            n['on'].update({b: b in p['on'] for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp')})
+            n['on'].update({b: b in p['on'] for b in strip_patches.BLOCKS})
+            n['on']['gate'] = p['gate'] is not None
         if not self.dsp_gate(unit, ch, change):
             return
-        c.update({k: v for k, v in p.items() if k not in ('on', 'track')})
-        c['on'].update({b: b in p['on'] for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp')})
+        was_amp = c.get('amp', 'off') != 'off'
+        strip_patches.apply(c, p)
+        c.pop('patch_edited', None)
         L = self.units[unit]['link']
-        if c.get('amp', 'off') != 'off':                       # a ready-made chain takes the input out of amp mode
-            c['amp'] = 'off'
-            if L:
-                L.set_amp(ch, 'off')
         if L:
-            for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp'):
+            if was_amp:                                        # a strip patch takes the input out of amp mode
+                L.set_amp(ch, 'off')
+                self.push_fx(unit, ch)
+            for b in strip_patches.BLOCKS:
                 L.set_block(ch, b, c['on'][b], dict(c))
+        self.push_gate(unit, ch)
         tracks = load_tracks(unit)
-        if p.get('track') and not tracks[ch].get('name'):     # an unnamed input takes the preset's name + picture
+        if p.get('track') and not tracks[ch].get('name'):     # an unnamed input takes the patch's name + picture
             tracks[ch] = dict(name=p['track'][0], icon=p['track'][1])
             save_tracks(tracks, unit)
             if unit == self.cur:
                 self.rail.set_unit(unit)
         if unit == self.cur:
             self.strip.show_chan(self.strip.ch)
+        self.do_log(f'unit {unit + 1} input {ch + 1}: patch {p["name"]}')
         self.retitle()
         self.touch()
+        if self.patch_win:
+            self.patch_win.refresh()
+
+    def save_patch(self, unit, ch, name):
+        """what the input runs now, as one of yours: a strip patch, or an amp tone when the amp is on"""
+        import strip_patches
+        c = self.units[unit]['chans'][ch]
+        if c.get('amp', 'off') != 'off':
+            self.save_amp_preset(unit, ch, name)
+            return
+        p = strip_patches.from_chan(c, name)
+        if strip_patches.find(p['name'], user=[]):
+            p['name'] = (p['name'] + ' (MINE)')[:24]          # factory patches stay as they are
+        user = [u for u in strip_patches.load_user() if u['name'] != p['name']] + [p]
+        try:
+            strip_patches.save_user(user)
+        except OSError as e:
+            self.rec_info.setText('could not save the patch: ' + str(e)[:60])
+            return
+        c['patch'] = p['name']
+        c.pop('patch_edited', None)
+        if unit == self.cur:
+            self.strip.show_chan(self.strip.ch)
+        self.rec_info.setText(f'patch saved: {p["name"]}')
+        self.touch()
+
+    def delete_patch(self, name):
+        import strip_patches
+        user = strip_patches.load_user()
+        keep = [u for u in user if u['name'] != name]
+        if len(keep) != len(user):
+            strip_patches.save_user(keep)
+            self.rec_info.setText(f'patch deleted: {name}')
+        else:
+            self.delete_amp_preset(name)
+        for u in self.units:                                   # inputs running it keep the sound, lose the name
+            for c in u['chans']:
+                for k, e in (('patch', 'patch_edited'), ('amp_preset', 'amp_edited')):
+                    if c.get(k) == name:
+                        c.pop(k, None)
+                        c.pop(e, None)
+        self.strip.show_chan(self.strip.ch)
+        self.touch()
+
+    def patch_browser(self):
+        if self.patch_win is None:
+            self.patch_win = PatchBrowser(self)
+        self.patch_win.set_fx_ok(getattr(self.units[self.cur]['link'], 'fx_ok', None))
+        self.patch_win.refresh()
+        self.patch_win.show()
+        self.patch_win.raise_()
 
     def set_amp(self, unit, ch, voice):
         """one amp per box: turning it on here takes it off the box's other inputs in this app's state"""
@@ -1597,6 +1829,8 @@ class Main(QWidget):
         was = c.get('amp', 'off')
         c['amp'] = voice
         if voice != 'off':
+            if c.get('patch'):                                # the strip patch under it no longer runs as saved
+                c['patch_edited'] = True
             c['on'].update(tube=False, comp=False)
             if voice != was:                                  # a channel brings its own gain, presence and master
                 c.update(amp_panel.voice_defaults(voice))
@@ -1905,7 +2139,7 @@ class Main(QWidget):
 
     def poll_do(self):
         """app/do.txt: commands Claude drops in while the app runs (it owns the USB link, so nothing else can talk
-        to the boxes): preset <unit> <input> <vocal|guitar|flat>, whoami"""
+        to the boxes): preset <unit> <input> <PATCH or TONE NAME>, whoami"""
         p = os.path.join(HERE, 'do.txt')
         if not os.path.exists(p):
             return
@@ -1914,8 +2148,11 @@ class Main(QWidget):
         os.remove(p)
         for ln in lines:
             a = ln.split()
-            if a[:1] == ['preset'] and len(a) == 4 and a[3] in PRESETS:
-                self.apply_preset(int(a[1]) - 1, int(a[2]) - 1, a[3])
+            if a[:1] == ['preset'] and len(a) >= 4:
+                import strip_patches
+                name = ' '.join(a[3:])
+                name = strip_patches.OLD_NAMES.get(name, name.upper())
+                self.apply_preset(int(a[1]) - 1, int(a[2]) - 1, name)
                 self.do_log('ok ' + ln)
             elif a[:1] == ['whoami']:
                 for i, u in enumerate(self.units[:self.usb_boxes]):
@@ -2283,6 +2520,9 @@ class Main(QWidget):
         pct, live = self.dsp_now(self.cur)
         self.dsp_bar.set_load(pct, live, self.cur)
         ok = getattr(self.units[self.cur]['link'], 'fx_ok', None)
+        self.strip.blk['gate'].set_blocked(NO_FW if ok is False else None)
+        if self.patch_win:
+            self.patch_win.set_fx_ok(ok)
         if self.strip.amp_head.fx_ok != ok:
             self.strip.amp_head.fx_ok = ok
             for key in ('amp_gate', 'amp_echo', 'amp_time', 'amp_rev'):   # knobs that do nothing on this box: gone

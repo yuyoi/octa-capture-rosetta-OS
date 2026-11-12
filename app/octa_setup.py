@@ -49,6 +49,10 @@ def clean_chan(d):
         out['amp_preset'] = d['amp_preset']
         if d.get('amp_edited') is True:
             out['amp_edited'] = True
+    if isinstance(d.get('patch'), str) and 0 < len(d['patch']) <= 24:   # the strip patch it came from (strip_patches.py)
+        out['patch'] = d['patch']
+        if d.get('patch_edited') is True:
+            out['patch_edited'] = True
     if isinstance(d.get('mic'), str) and 0 < len(d['mic']) < 40:
         out['mic'] = d['mic']
     if isinstance(d.get('mic_prev'), dict):                   # the EQ to go back to when the mic correction is switched off

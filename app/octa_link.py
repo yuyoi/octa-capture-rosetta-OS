@@ -199,6 +199,11 @@ class Link(QObject):
         import octa_lab
         self.lab = octa_lab.Lab(unit=self.unit, ports=self.transport() if self.transport else None)
         self.strip = octa_lab.Strip(self.lab)
+        try:                                                  # gate/FX firmware (strip10)? Read-only check, so the app can say so up front
+            base = self.lab.gate_addr()
+            self.fx_ok = bool(base) and struct.unpack('<I', self.lab.peek(base, 4, 4))[0] == octa_lab.GATE_MAGIC
+        except Exception:
+            self.fx_ok = None
         try:
             self.fs = self.strip.fs
         except SystemExit:

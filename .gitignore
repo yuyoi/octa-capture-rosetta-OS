@@ -57,3 +57,4 @@ tools/*_memprobe.json
 /app/do.out
 /app/do_demo.out
 /app/amp_presets_user.json
+/app/strip_patches_user.json

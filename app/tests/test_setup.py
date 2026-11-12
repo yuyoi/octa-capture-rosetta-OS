@@ -102,7 +102,7 @@ w.on_flags(0, EMPTY)
 check('nothing saved yet: a fresh box is left alone', not [c for c in w.units[0]['link'].calls if c[0] in ('blk', 'gain')])
 
 b = w.strip.blk['tube']                              # turn the tube on with a real click
-w.units[0]['chans'][0]['on'].update(dict.fromkeys(rc.PRESETS['flat'] and () or ('hpf', 'low', 'peak', 'high', 'tube', 'comp'), False))
+w.units[0]['chans'][0]['on'].update(dict.fromkeys(('hpf', 'low', 'peak', 'high', 'tube', 'comp'), False))
 w.strip.show_chan(0)
 QTest.mouseClick(b, Qt.LeftButton)
 check('clicking TUBE turns it on', w.units[0]['chans'][0]['on']['tube'] is True)
