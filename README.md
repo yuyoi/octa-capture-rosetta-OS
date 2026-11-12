@@ -39,10 +39,10 @@ A PC editor for the OCTA-CAPTURE running Rosetta OS, styled after the unit's fro
 - **Tube** (glows brighter with DRIVE) and **compressor** with the unit's real gain-reduction meter.
 - **Preamp gain + 48V** through Roland's own protocol (decoded in [re/CTRL_PROTOCOL.md](re/CTRL_PROTOCOL.md)), live input meters.
 - **Rosetta amp head** for guitar: CLEAN / CRUNCH / LEAD / CRANKED / FUZZ channels, HARD CLIP, GAIN-BASS-MIDDLE-TREBLE-PRESENCE-MASTER, and a ROSETTA FX section (GATE, ECHO, TIME, REVERB). It runs in the box's DSP, not on the PC, so it adds no delay.
-- **Patches for mic and guitar:** tap PATCH on the strip page for one screen with every patch; a tap loads it on the spot.
-  - MIC (Sennheiser e935): E935 VOCAL, VOCAL, DOOM CHANT, SCREAM, GROWL, BACKING VOX, TALK, RADIO, CAB MIC.
-  - GUITAR DI (amp off): REAMP DI, CLEAN DI, LES PAUL DI, GUITAR DI, NECK JAZZ, FLAT.
-  - GUITAR AMP: ten tones, from GLASS CLEAN, DOOM CLEAN, BLUES BREAK and PLEXI up to HOLY WARS, FUNERALOPOLIS, FLOODS, DETROIT SOLO, CROWBAR and SABBATH. All are levelled to the same peak in the C model of the box.
+- **Patches for mic and guitar:** tap PATCH on the strip page. Four big tabs (MIC, GUITAR DI, GUITAR AMP, YOURS); a tap loads the patch on the spot.
+  - MIC (Sennheiser e935), 30: sung vocals (E935 VOCAL, CLEAN TENOR, BARITONE, GOTHIC CROON, CHOIR ...), heavy vocals (SCREAM, GROWL, SHRIEK, LOW GUTTURAL, SHOUT, PUNK SNOT), spoken (TALK, BROADCAST, STREAM VOICE, INCANTATION), effects (RADIO, TELEPHONE, DIST VOX) and the mic on instruments (CAB MIC, ACOUSTIC MIC, HARMONICA, SNARE, TOM, BASS CAB, HORN).
+  - GUITAR DI (amp off), 27: per guitar (LES PAUL, SINGLE COIL, P90, HOLLOW BODY, 7-STRING, BARITONE, 12-STRING, ACOUSTIC piezo), per style (CLEAN, TWANG, FUNK, SLIDE, SUSTAIN, AMBIENT, DROP TUNED), pedals and dirt (PEDALBOARD, FUZZ PEDAL, TUBE DIRT, LO-FI), four for bass, REAMP DI and FLAT.
+  - GUITAR AMP, 30 tones: cleans (GLASS, JAZZ, SPRING SURF, FUNK, COUNTRY SLAP, AMBIENT WASH, DOOM CLEAN), crunch (BLUES BREAK, BLUES LEAD, INDIE, POST ROCK, PLEXI, ARENA ROCK, PUNK, GRUNGE) and heavy (80S METAL, SHRED, NU METAL, DJENT, CHAINSAW, BLACK METAL, STONER, SHOEGAZE, DRONE and the first six). All are levelled to the same peak in the C model of the box.
   - Save as many of your own as you like on the PC. The preamp gain is never touched.
   - The gate parts need test/strip10; on older firmware the app says so on the key.
 - **DSP bar:** shows live how much of the box's DSP is in use. It refuses an add that would go past 80 % ("FULL · REMOVE SOMETHING"), and its task list switches anything off with one X.

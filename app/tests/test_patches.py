@@ -58,9 +58,34 @@ check('PATCH opens the browser', pb is not None and pb.isVisible())
 check('MIC column holds the e935 patches', 'E935 VOCAL' in pb.btns and 'GROWL' in pb.btns and 'SCREAM' in pb.btns)
 check('AMP column holds all amp tones incl. the new clean ones', all(p['name'] in pb.btns for p in ap.FACTORY) and 'GLASS CLEAN' in pb.btns)
 check('every button finger-sized', all(b.minimumHeight() >= 40 for b in pb.btns.values()))
+
+
+def tab_of(name):
+    return next(col for col, n, *_ in pb.items() if n == name)
+
+
+def tap(name):
+    """like a finger: open the group's tab, then press the key"""
+    QTest.mouseClick(pb.tabs[tab_of(name)], Qt.LeftButton)
+    app.processEvents()
+    QTest.mouseClick(pb.btns[name], Qt.LeftButton)
+    app.processEvents()
+
+
+check('opens on the MIC tab for unit 2', pb.tab == 'MIC' and pb.pages['MIC'].isVisible() and not pb.pages['AMP'].isVisible())
+check('20+ new in each group', sum(c == 'MIC' for c, *_ in pb.items()) >= 29 and sum(c == 'GUITAR' for c, *_ in pb.items()) >= 26
+      and sum(c == 'AMP' for c, *_ in pb.items()) >= 30)
+clipped = []
+for key in pb.pages:
+    QTest.mouseClick(pb.tabs[key], Qt.LeftButton)
+    app.processEvents()
+    for n, b in pb.btns.items():
+        if tab_of(n) == key and (not b.isVisible() or b.geometry().bottom() > pb.pages[key].height() or b.height() < 40):
+            clipped.append(n)
+check('every key on every tab visible, not clipped, finger-sized', not clipped, clipped)
 L = w.units[1]['link']
 L.calls.clear()
-QTest.mouseClick(pb.btns['SCREAM'], Qt.LeftButton)
+tap('SCREAM')
 app.processEvents()
 c = w.units[1]['chans'][w.strip.ch]
 p = sp.find('SCREAM')
@@ -76,12 +101,12 @@ for k, o in enumerate(w.units[1]['chans']):          # demo: all 8 inputs fully 
     if k != w.strip.ch:
         o['on'].update(dict.fromkeys(o['on'], False))
 L.calls.clear()
-QTest.mouseClick(pb.btns['DOOM CLEAN'], Qt.LeftButton)
+tap('DOOM CLEAN')
 app.processEvents()
 check('tap DOOM CLEAN: amp on with the tone', c.get('amp') == 'clean' and c.get('amp_preset') == 'DOOM CLEAN', (c.get('amp'), c.get('amp_preset')))
 check('PATCH key shows the amp tone', 'DOOM CLEAN' in w.strip.patch_btn.text())
 # back to a strip patch: amp off
-QTest.mouseClick(pb.btns['TALK'], Qt.LeftButton)
+tap('TALK')
 app.processEvents()
 check('tap TALK: amp off again, TALK on', c.get('amp') == 'off' and c['patch'] == 'TALK' and 'amp_preset' not in c)
 check('amp off sent to the box', ('amp', w.strip.ch, 'off') in L.calls, L.calls)
@@ -116,7 +141,7 @@ L.fx_ok = True
 w.refresh_dsp()
 app.processEvents()
 check('strip10 on the box: notice gone, GATE live', not pb.fw.isVisible() and not w.strip.blk['gate'].blocked)
-QTest.mouseClick(pb.btns['E935 VOCAL'], Qt.LeftButton)
+tap('E935 VOCAL')
 app.processEvents()
 pb.grab().save(os.path.join(out, 'patch_browser.png'))
 # old remote names still work

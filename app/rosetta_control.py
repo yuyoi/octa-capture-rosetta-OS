@@ -1160,9 +1160,11 @@ class StripPage(QWidget):
 
 
 class PatchBrowser(QDialog):
-    """every patch for the shown input on one screen: MIC (e935), GUITAR DI, GUITAR AMP tones, YOURS.
-    One tap loads it straight away and the window stays open, so you can tap through them while you play."""
+    """every patch for the shown input: four big group tabs (MIC e935, GUITAR DI, GUITAR AMP tones, YOURS), each a
+    4-wide grid of finger-sized keys. One tap loads it straight away and the window stays open, so you can tap
+    through them while you play."""
     COLS = (('MIC', 'MIC  ·  e935'), ('GUITAR', 'GUITAR  ·  DI'), ('AMP', 'GUITAR  ·  AMP'), ('USER', 'YOURS'))
+    WIDE = 4
 
     def __init__(self, win):
         super().__init__(win)
@@ -1179,6 +1181,9 @@ class PatchBrowser(QDialog):
             'font:bold 13px "Segoe UI";text-align:left;}'
             'QPushButton:checked{background:#2a6fe0;color:#fff;border-color:#bfe3ff;}'
             'QPushButton#tool{text-align:center;padding:10px 16px;}'
+            'QPushButton#tab{text-align:center;padding:10px 16px;font:bold 14px "Segoe UI";background:#2a2d31;color:#c9ced4;'
+            'border-color:#4a4f55;}'
+            'QPushButton#tab:checked{background:#2a6fe0;color:#fff;border-color:#bfe3ff;}'
             'QPushButton:disabled{background:#3a3d42;color:#6d737b;border-color:#4a4f55;}')
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -1191,22 +1196,28 @@ class PatchBrowser(QDialog):
         self.fw.setWordWrap(True)
         self.fw.hide()
         root.addWidget(self.fw)
-        grid = QHBoxLayout()
-        grid.setSpacing(14)
-        self.col = {}
+        tabs = QHBoxLayout()
+        tabs.setSpacing(8)
+        self.tabs, self.pages, self.col, self.tab, self.built = {}, {}, {}, 'MIC', None
         for key, title in self.COLS:
-            v = QVBoxLayout()
-            v.setSpacing(6)
-            t = QLabel(title)
-            t.setObjectName('col')
-            v.addWidget(t)
-            box = QVBoxLayout()
-            box.setSpacing(6)
-            v.addLayout(box)
-            v.addStretch(1)
-            grid.addLayout(v, 1)
-            self.col[key] = box
-        root.addLayout(grid, 1)
+            t = QPushButton(title)
+            t.setObjectName('tab')
+            t.setCheckable(True)
+            t.setMinimumHeight(TOUCH_H + 8)
+            t.clicked.connect(lambda _=False, k=key: self.show_tab(k))
+            tabs.addWidget(t, 1)
+            self.tabs[key] = t
+        root.addLayout(tabs)
+        for key, _ in self.COLS:
+            page = QWidget()
+            g = QGridLayout(page)
+            g.setContentsMargins(0, 4, 0, 0)
+            g.setSpacing(6)
+            for i in range(self.WIDE):
+                g.setColumnStretch(i, 1)
+            root.addWidget(page, 1)
+            self.pages[key], self.col[key] = page, g
+        self.show_tab('MIC')
         self.note = QLabel()
         self.note.setObjectName('note')
         self.note.setWordWrap(True)
@@ -1227,7 +1238,22 @@ class PatchBrowser(QDialog):
         row.addStretch(1)
         row.addWidget(close)
         root.addLayout(row)
-        self.resize(1000, 640)
+        self.resize(1180, 720)
+
+    def show_tab(self, key):
+        self.tab = key
+        for k, page in self.pages.items():
+            page.setVisible(k == key)
+            self.tabs[k].setChecked(k == key)
+
+    def open_on_current(self):
+        """opening the browser: the tab holding what the input runs now (amp on = AMP; unit 1 starts on guitar)"""
+        cur, _ = self.current()
+        for col, name, *_ in self.items():
+            if name == cur:
+                self.show_tab(col)
+                return
+        self.show_tab('AMP' if self.chan().get('amp', 'off') != 'off' else ('GUITAR' if self.win.cur == 0 else 'MIC'))
 
     def set_fx_ok(self, ok):
         self.fx_ok = ok
@@ -1250,30 +1276,44 @@ class PatchBrowser(QDialog):
         out += [('USER', p['name'], p['note'] or 'your amp tone', True, True) for p in amp_presets.load_user()]
         return out
 
-    def refresh(self):
-        for box in self.col.values():
-            while box.count():
-                w = box.takeAt(0).widget()
+    def build(self, items):
+        """(re)make the keys; only when the list itself changed (saved / deleted one of yours)"""
+        for g in self.col.values():
+            while g.count():
+                w = g.takeAt(0).widget()
                 if w:
                     w.hide()                                   # gone now, not at the next event loop turn
                     w.deleteLater()
         self.btns, self.notes, self.mine = {}, {}, set()
-        cur, edited = self.current()
-        for col, name, note, fx, mine in self.items():
-            b = QPushButton(name + ('   + GATE' if fx and col in ('MIC', 'GUITAR', 'USER') and not mine else ''))
+        n = dict.fromkeys(self.col, 0)
+        for col, name, note, fx, mine in items:
+            b = QPushButton(name + ('   + GATE' if fx and col in ('MIC', 'GUITAR') else ''))
             b.setCheckable(True)
-            b.setChecked(name == cur)
             b.setMinimumHeight(TOUCH_H + 4)
             b.setToolTip(note)
-            b.clicked.connect(lambda _=False, n=name: self.pick(n))
-            self.col[col].addWidget(b)
+            b.clicked.connect(lambda _=False, nm=name: self.pick(nm))
+            self.col[col].addWidget(b, n[col] // self.WIDE, n[col] % self.WIDE)
+            n[col] += 1
             self.btns[name], self.notes[name] = b, note
             if mine:
                 self.mine.add(name)
-        if not any(m for m in self.mine):
-            t = QLabel('none yet: set an input up,\nthen SAVE AS YOURS')
+        if not self.mine:
+            t = QLabel('None yet: set an input up the way you like it, then SAVE AS YOURS.')
             t.setObjectName('col')
-            self.col['USER'].addWidget(t)
+            self.col['USER'].addWidget(t, 0, 0, 1, self.WIDE)
+        for g, k in ((self.col[k], k) for k in self.col):
+            g.setRowStretch(g.rowCount(), 1)                   # keys stay at the top, finger height
+        for key, title in self.COLS:
+            self.tabs[key].setText(f'{title}   {n[key]}')
+        self.built = items
+
+    def refresh(self):
+        items = self.items()
+        if items != self.built:
+            self.build(items)
+        cur, edited = self.current()
+        for name, b in self.btns.items():
+            b.setChecked(name == cur)
         tracks = load_tracks(self.win.cur)
         nm = (tracks[self.win.strip.ch].get('name') or '').upper()
         self.who.setText(f'UNIT {self.win.cur + 1}  ·  INPUT {self.win.strip.ch + 1}' + (f'  ·  {nm}' if nm else '')
@@ -1808,6 +1848,7 @@ class Main(QWidget):
             self.patch_win = PatchBrowser(self)
         self.patch_win.set_fx_ok(getattr(self.units[self.cur]['link'], 'fx_ok', None))
         self.patch_win.refresh()
+        self.patch_win.open_on_current()
         self.patch_win.show()
         self.patch_win.raise_()
 
