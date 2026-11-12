@@ -7,6 +7,7 @@ os.environ['RD_SETUP'] = os.path.join(tmp, 'setup.json')
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import rosetta_control as rc
+import octa_setup
 import strip_patches as sp
 import amp_presets as ap
 from PySide6.QtWidgets import QApplication
@@ -131,7 +132,8 @@ L.fx_ok = False
 w.refresh_dsp()
 app.processEvents()
 check('no strip10 on the box: red notice in the browser', pb.fw.isVisible() and 'strip10' in pb.fw.text())
-check('no strip10: strip GATE key blocked with NO FW', w.strip.blk['gate'].blocked and 'strip10' in w.strip.blk['gate'].blocked)
+check('no strip10: strip GATE + FX keys blocked with NO FW', w.strip.blk['gate'].blocked and 'strip10' in w.strip.blk['gate'].blocked
+      and w.strip.blk['fx'].blocked)
 before = c['on']['gate']
 QTest.mouseClick(w.strip.blk['gate'], Qt.LeftButton)
 check('blocked GATE key does nothing', c['on']['gate'] == before)
@@ -144,10 +146,34 @@ check('strip10 on the box: notice gone, GATE live', not pb.fw.isVisible() and no
 tap('E935 VOCAL')
 app.processEvents()
 pb.grab().save(os.path.join(out, 'patch_browser.png'))
+# singer patches carry the box's echo + reverb: one input per box
+L.calls.clear()
+tap('HETFIELD PUPPETS')
+fxc = [x for x in L.calls if x[0] == 'fx']
+check('HETFIELD PUPPETS: 25 ms double sent, no reverb', fxc and fxc[-1][1] == w.strip.ch and fxc[-1][2]['echo_ms'] == 25.0
+      and fxc[-1][2]['rev_mix'] == 0.0, fxc)
+check('FX key lit on the strip', w.strip.blk['fx'].checked and c['on']['fx'])
+other = (w.strip.ch + 1) % 8
+w.units[1]['chans'][other]['on'].update(dict.fromkeys(w.units[1]['chans'][other]['on'], False))
+L.calls.clear()
+w.apply_preset(1, other, 'WIZARD OBORN')
+check('another input takes the box FX: the first one lets go', w.units[1]['chans'][other]['on']['fx'] and not c['on']['fx']
+      and [x for x in L.calls if x[0] == 'fx'][-1][1] == other, L.calls)
+L.calls.clear()
+QTest.mouseClick(w.strip.blk['fx'], Qt.LeftButton)          # FX back on for the shown input by hand
+check('FX key by hand takes it back', c['on']['fx'] and [x for x in L.calls if x[0] == 'fx'][-1][1] == w.strip.ch
+      and not w.units[1]['chans'][other]['on']['fx'], L.calls)
+L.calls.clear()
+tap('E935 VOCAL')
+check('a patch without FX switches it off on its input', not c['on']['fx'] and ('fx', w.strip.ch, None) in L.calls, L.calls)
+d = octa_setup.clean_chan(dict(w.units[1]['chans'][other]))
+check('FX settings kept in setup.json', d['on'].get('fx') is False and d.get('vfx', {}).get('echo_ms') == 380.0, d.get('vfx'))
+import dsp_budget
+check('DSP bar counts the echo + reverb of a patch', {'echo', 'reverb'} <= {b for b, _ in dsp_budget.tasks(dict(c, on=dict(c['on'], fx=True),
+      vfx=sp.find('WIZARD OBORN')['fx']))})
 # old remote names still work
 check('old preset names map', sp.find('e935')['name'] == 'E935 VOCAL' and sp.find('lespaul')['name'] == 'LES PAUL DI')
 # saved state round trip
-import octa_setup
 d = octa_setup.clean_chan(dict(c, patch_edited=True))
 check('patch name kept in setup.json', d.get('patch') == 'E935 VOCAL' and d.get('patch_edited') is True)
 print('ALL OK' if ok else 'SOME FAILED')

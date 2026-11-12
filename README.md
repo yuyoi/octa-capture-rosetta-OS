@@ -39,12 +39,14 @@ A PC editor for the OCTA-CAPTURE running Rosetta OS, styled after the unit's fro
 - **Tube** (glows brighter with DRIVE) and **compressor** with the unit's real gain-reduction meter.
 - **Preamp gain + 48V** through Roland's own protocol (decoded in [re/CTRL_PROTOCOL.md](re/CTRL_PROTOCOL.md)), live input meters.
 - **Rosetta amp head** for guitar: CLEAN / CRUNCH / LEAD / CRANKED / FUZZ channels, HARD CLIP, GAIN-BASS-MIDDLE-TREBLE-PRESENCE-MASTER, and a ROSETTA FX section (GATE, ECHO, TIME, REVERB). It runs in the box's DSP, not on the PC, so it adds no delay.
-- **Patches for mic and guitar:** tap PATCH on the strip page. Four big tabs (MIC, GUITAR DI, GUITAR AMP, YOURS); a tap loads the patch on the spot.
+- **Patches for mic and guitar:** tap PATCH on the strip page. Five big tabs (MIC, SINGERS, GUITAR DI, GUITAR AMP, YOURS); a tap loads the patch on the spot.
   - MIC (Sennheiser e935), 30: sung vocals (E935 VOCAL, CLEAN TENOR, BARITONE, GOTHIC CROON, CHOIR ...), heavy vocals (SCREAM, GROWL, SHRIEK, LOW GUTTURAL, SHOUT, PUNK SNOT), spoken (TALK, BROADCAST, STREAM VOICE, INCANTATION), effects (RADIO, TELEPHONE, DIST VOX) and the mic on instruments (CAB MIC, ACOUSTIC MIC, HARMONICA, SNARE, TOM, BASS CAB, HORN).
+  - SINGERS, 16: OZZY (Sabbath, Blizzard), MAYNARD (clean, dirt, megaphone, whisper), KYUSS GARCIA, WIZARD OBORN, STALEY, CORNELL, HETFIELD (Puppets, Black), ANSELMO, STEELE, MUSTAINE, DANZIG. Each is built from what is on record about the record's vocal chain (mic, compressor, doubling, delay/reverb), with the e935 EQ'd toward that mic. Sources are in [docs/VOCAL_PATCHES.md](docs/VOCAL_PATCHES.md).
+  - Patches can bring the box's echo + reverb (the FX key on the strip, one input per box): doubles, slapback, tape echo, rooms.
   - GUITAR DI (amp off), 27: per guitar (LES PAUL, SINGLE COIL, P90, HOLLOW BODY, 7-STRING, BARITONE, 12-STRING, ACOUSTIC piezo), per style (CLEAN, TWANG, FUNK, SLIDE, SUSTAIN, AMBIENT, DROP TUNED), pedals and dirt (PEDALBOARD, FUZZ PEDAL, TUBE DIRT, LO-FI), four for bass, REAMP DI and FLAT.
   - GUITAR AMP, 30 tones: cleans (GLASS, JAZZ, SPRING SURF, FUNK, COUNTRY SLAP, AMBIENT WASH, DOOM CLEAN), crunch (BLUES BREAK, BLUES LEAD, INDIE, POST ROCK, PLEXI, ARENA ROCK, PUNK, GRUNGE) and heavy (80S METAL, SHRED, NU METAL, DJENT, CHAINSAW, BLACK METAL, STONER, SHOEGAZE, DRONE and the first six). All are levelled to the same peak in the C model of the box.
   - Save as many of your own as you like on the PC. The preamp gain is never touched.
-  - The gate parts need test/strip10; on older firmware the app says so on the key.
+  - The gate and FX parts need test/strip10; on older firmware the app says so on the keys.
 - **DSP bar:** shows live how much of the box's DSP is in use. It refuses an add that would go past 80 % ("FULL · REMOVE SOMETHING"), and its task list switches anything off with one X.
 - **Touch-friendly:** 40 px buttons and big EQ nodes you can grab from a finger-width away. Slide sideways off a knob for fine steps. Hold an input for its menu.
 - Mixer and routing pages and a scene-bank panel are next.

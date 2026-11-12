@@ -49,6 +49,11 @@ def tasks(c, slim=False):
             out.append(('echo', COST['echo']))
         if c.get('amp_rev', 0) > 0:
             out.append(('reverb', COST['reverb']))
+    elif c['on'].get('fx') and c.get('vfx'):                  # a strip patch's own echo + reverb
+        if c['vfx'].get('echo_mix', 0) > 0 and c['vfx'].get('echo_ms', 0) > 0:
+            out.append(('echo', COST['echo']))
+        if c['vfx'].get('rev_mix', 0) > 0:
+            out.append(('reverb', COST['reverb']))
     if (amp and c.get('amp_gate', 0) > 0) or (not amp and c['on'].get('gate')):
         out.append(('gate', COST['gate']))
     if out:

@@ -11,7 +11,7 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 PATH = os.environ.get('RD_SETUP', os.path.join(HERE, 'setup.json'))
 
-BLOCKS = ('hpf', 'low', 'peak', 'high', 'tube', 'comp', 'gate')
+BLOCKS = ('hpf', 'low', 'peak', 'high', 'tube', 'comp', 'gate', 'fx')
 VOICES = ('off', 'clean', 'crunch', 'lead', 'cranked', 'fuzz')
 RANGES = dict(hpf_f=(20, 600), low_f=(30, 1000), low_g=(-15, 15), peak_f=(100, 12000), peak_g=(-15, 15), peak_q=(0.3, 8),
               high_f=(1000, 16000), high_g=(-15, 15), drive=(0, 24), bias=(0, 0.6), tube_out=(-24, 24), thresh=(-60, 0),
@@ -49,6 +49,11 @@ def clean_chan(d):
         out['amp_preset'] = d['amp_preset']
         if d.get('amp_edited') is True:
             out['amp_edited'] = True
+    if isinstance(d.get('vfx'), dict):                        # a strip patch's echo + reverb (strip_patches.py)
+        import strip_patches
+        fx = strip_patches.clean_fx(d['vfx'])
+        if fx:
+            out['vfx'] = fx
     if isinstance(d.get('patch'), str) and 0 < len(d['patch']) <= 24:   # the strip patch it came from (strip_patches.py)
         out['patch'] = d['patch']
         if d.get('patch_edited') is True:

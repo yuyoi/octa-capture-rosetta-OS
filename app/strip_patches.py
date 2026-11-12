@@ -2,8 +2,9 @@
 in strip_patches_user.json next to setup.json (no limit). Guitar amp tones live in amp_presets.py; the PATCH browser
 lists both.
 
-A patch = which blocks are on + their knobs + the gate threshold (None = gate off). The preamp gain is never touched:
-that's the hand on the knob. Everything is app-side, so new patches need no firmware; the GATE part needs strip10.
+A patch = which blocks are on + their knobs + the gate threshold (None = gate off) + optional echo/reverb (`fx`, the
+box's ROSETTA FX: one input per box, after the strip, dry stays on time). The preamp gain is never touched: that's the
+hand on the knob. Everything is app-side, so new patches need no firmware; the GATE and FX parts need strip10.
 
 MIC patches are for the Sennheiser e935 (dynamic, its own presence lift ~4-5 kHz, proximity bass up close), unit 2 input 1.
 GUITAR patches are for the Les Paul straight in (Hi-Z, 35 dB) with the amp off. Starting points by reasoning, not by ear yet.
@@ -20,8 +21,32 @@ PARAMS = ('hpf_f', 'low_f', 'low_g', 'peak_f', 'peak_g', 'peak_q', 'high_f', 'hi
 ALL = BLOCKS
 
 
-def P(name, group, on, note, gate=None, track=None, **kv):
-    return dict(name=name, group=group, on=tuple(on), gate=gate, track=track, params=kv, note=note)
+FX_RANGES = dict(echo_ms=(0, 1360), echo_fb=(0, 0.9), echo_mix=(0, 1), echo_tone=(500, 12000), rev_mix=(0, 1),
+                 rev_size=(0, 1), rev_damp=(0, 1))
+FX_DEFAULT = dict(echo_ms=110.0, echo_fb=0.05, echo_mix=0.2, echo_tone=4000.0, rev_mix=0.12, rev_size=0.5, rev_damp=0.5)
+
+
+def P(name, group, on, note, gate=None, track=None, fx=None, **kv):
+    return dict(name=name, group=group, on=tuple(on), gate=gate, track=track, params=kv, note=note, fx=fx)
+
+
+def vfx(echo_ms=0.0, fb=0.0, echo=0.0, tone=4000.0, rev=0.0, size=0.5, damp=0.5):
+    """echo (ms, feedback 0-0.9, mix 0-1, repeat tone Hz) + reverb (mix 0-1, size, damp): the box's ROSETTA FX"""
+    return dict(echo_ms=float(echo_ms), echo_fb=float(fb), echo_mix=float(echo), echo_tone=float(tone), rev_mix=float(rev),
+                rev_size=float(size), rev_damp=float(damp))
+
+
+def clean_fx(d):
+    """a saved/loaded FX dict, range-checked, or None"""
+    if not isinstance(d, dict):
+        return None
+    out = {}
+    for k, (lo, hi) in FX_RANGES.items():
+        v = d.get(k, FX_DEFAULT[k])
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or v != v:
+            return None
+        out[k] = float(min(hi, max(lo, v)))
+    return out
 
 
 def eq(hpf, low, peak, high):
@@ -105,6 +130,71 @@ FACTORY = [
       track=('Bass', 'bass'), **eq(40, (80, 2.0), (500, -3.0, 1.0), (5000, -2.0)), **comp(-22, 4.0, 15, 200, 3.0)),
     P('HORN MIC', 'MIC', ('hpf', 'low', 'peak', 'high', 'comp'), 'Sax or trumpet: rumble out, the honk at 1 kHz eased, some air, 3:1.',
       track=('Horn', 'vocal'), **eq(80, (250, -1.0), (1000, -2.0, 1.0), (9000, 2.0)), **comp(-20, 3.0, 10, 150, 3.0)),
+    # ---------------- SINGERS: real records' vocal chains (sources: docs/VOCAL_PATCHES.md) ----------------
+    # Only mics, compressor types, doubling and delay/reverb habits are documented anywhere; no EQ numbers were ever
+    # published. So the EQ here mostly turns the e935 into the record's mic, and each note says what is on record.
+    P('OZZY SABBATH', 'SINGER', ALL, 'On record: a raw chain with almost no outboard (Tom Allom), vocals double/triple-tracked. '
+      'Nasal, pinched, mid-forward. Here: 1.6 kHz push, little below 150 Hz, a dull tape-soft top, console grit, a 28 ms double, small room.',
+      track=VOX, fx=vfx(28, 0.15, 0.45, 5000, rev=0.12, size=0.35, damp=0.6),
+      **eq(150, (250, -2.0), (1600, 3.5, 0.9), (8000, -3.0)), **tube(8.0, 0.30), **comp(-18, 3.0, 10, 150, 3.0)),
+    P('OZZY BLIZZARD', 'SINGER', ALL, 'On record (Max Norman): tight doubling on almost everything, AMS delay and a Lexicon 224 '
+      'in the room. Cleaner and brighter than Sabbath, more compression. Here: 30 ms double into a bright hall.',
+      track=VOX, fx=vfx(30, 0.1, 0.45, 7000, rev=0.25, size=0.75, damp=0.35),
+      **eq(120, (250, -1.5), (2000, 2.5, 1.0), (10000, 1.5)), **tube(4.0, 0.20), **comp(-22, 4.0, 5, 120, 5.0)),
+    P('MAYNARD CLEAN', 'SINGER', ALL, 'On record: a handheld tube condenser in foam into a Neve + 1176 (Barresi), close and dry. '
+      'Here: the e935 given condenser air, proximity boom held down, 1176-style fast 4:1, a hint of room.',
+      track=VOX, fx=vfx(rev=0.08, size=0.3, damp=0.6),
+      **eq(100, (200, -2.5), (3500, -1.0, 1.2), (10000, 3.0)), **tube(5.0, 0.20), **comp(-26, 4.0, 1, 80, 7.0)),
+    P('MAYNARD DIRT', 'SINGER', ALL, 'On record (10,000 Days): a highly distorted SM57 next to the clean mic, Helios strip, '
+      '"drastic EQ". One mic here, so the tube does the dirt: 1.5 kHz forward, the fizz off. Gate on.',
+      gate=-48.0, track=VOX, **eq(200, (300, -2.0), (1500, 4.0, 1.0), (6000, -6.0)), **tube(20.0, 0.40), **comp(-22, 6.0, 2, 80, 4.0)),
+    P('MAYNARD MEGAPHONE', 'SINGER', ('hpf', 'peak', 'high', 'tube', 'comp'), 'On record: megaphone parts through pickup "pipe bomb" '
+      'mics (B-Band). Here: roughly 350 Hz-3.5 kHz only (band guessed), a 1.4 kHz honk, grit, a short slap.',
+      track=VOX, fx=vfx(90, 0.1, 0.15, 2500), **eq(350, (200, 0.0), (1400, 6.0, 1.2), (3500, -15.0)), **tube(16.0, 0.45),
+      **comp(-20, 6.0, 3, 80, 3.0)),
+    P('MAYNARD WHISPER', 'SINGER', ('hpf', 'low', 'peak', 'high', 'comp'), 'On record (Undertow, Sylvia Massy): a U67 into an 1176 '
+      '"cranked way up to expose all the little details". Here: 8:1, fast, lots of makeup, condenser air, a little room.',
+      track=VOX, fx=vfx(rev=0.1, size=0.35, damp=0.5), **eq(120, (200, -3.0), (3000, 1.5, 1.0), (11000, 4.0)),
+      **comp(-38, 8.0, 0.5, 120, 14.0)),
+    P('KYUSS GARCIA', 'SINGER', ALL, 'On record: Sound City Neve (Joe Barresi, a dynamic-mic man), vocals overdubbed, sat level with '
+      'the band. A clean baritone holler. Here: chest and 1.2 kHz forward, 57-style top, Neve warmth, short plate, no slap.',
+      track=VOX, fx=vfx(rev=0.18, size=0.45, damp=0.5),
+      **eq(90, (180, 1.0), (1200, 2.0, 0.8), (8000, -1.5)), **tube(6.0, 0.25), **comp(-20, 4.0, 10, 150, 3.0)),
+    P('WIZARD OBORN', 'SINGER', ALL, 'On record: Space Echo + Copicat in the kit, vocals "heavily manipulated and low in the mix"; '
+      'a fuzz pedal is fan talk. Here: thin, fuzzy, 380 ms dark tape echo with feedback, big dark reverb. Pull the fader down.',
+      gate=-45.0, track=VOX, fx=vfx(380, 0.55, 0.45, 1800, rev=0.35, size=0.9, damp=0.75),
+      **eq(300, (400, -2.0), (1200, 4.0, 1.0), (4000, -8.0)), **tube(22.0, 0.45), **comp(-22, 6.0, 3, 100, 3.0)),
+    P('STALEY DIRT', 'SINGER', ALL, 'On record (Dave Jerden): M49 > API > Summit tube comp, NO EQ, every vocal tripled, an H3000 '
+      'delay, little reverb. The EQ here only makes the e935 an M49 (fuller low-mids, smoother top). 35 ms stack, no reverb.',
+      track=VOX, fx=vfx(35, 0.25, 0.45, 6000), **eq(80, (250, 1.5), (4500, -1.5, 1.0), (8000, -2.0)), **tube(5.0, 0.25),
+      **comp(-22, 4.0, 10, 300, 4.0)),
+    P('CORNELL', 'SINGER', ALL, 'On record (Superunknown): U47 soft, U87 full power, sung very close and very loud. Here: '
+      'condenser air on the e935, close-up boom held, fast hard 10:1 to catch the huge range, dry.',
+      track=VOX, **eq(100, (200, -2.0), (3000, 1.0, 1.0), (10000, 2.0)), **tube(3.0, 0.15), **comp(-24, 10.0, 0.5, 80, 6.0)),
+    P('HETFIELD PUPPETS', 'SINGER', ALL, 'On record (Flemming Rasmussen): SM7B > Trident desk > UREI comp to tape, double-tracked, '
+      '"no reverb!". Here: the e935 darkened toward an SM7B, 1176-style 6:1, a 25 ms double, zero reverb. Gate on.',
+      gate=-48.0, track=VOX, fx=vfx(25, 0.0, 0.5, 6000), **eq(110, (220, 1.0), (4500, -1.5, 1.0), (7000, -3.0)),
+      **tube(4.0, 0.20), **comp(-24, 6.0, 1, 100, 6.0)),
+    P('HETFIELD BLACK', 'SINGER', ALL, 'On record (Bob Rock): a Neumann FET condenser, ONE vocal, no double ("I\'ll get you a great '
+      'vocal sound"), more space. Here: condenser top, 4:1, a single voice in a medium room.',
+      gate=-50.0, track=VOX, fx=vfx(rev=0.2, size=0.6, damp=0.45), **eq(100, (200, -1.0), (3000, 1.5, 1.0), (10000, 2.5)),
+      **tube(4.0, 0.20), **comp(-22, 4.0, 3, 120, 5.0)),
+    P('ANSELMO', 'SINGER', ALL, 'On record (Sterling Winfield): an SM58 in the control room with the NS-10s on 11, screaming. '
+      'Here: 58-style top, 2.5 kHz grit, tube bite, hard 8:1, a short slap. Gate on.',
+      gate=-46.0, track=VOX, fx=vfx(95, 0.05, 0.15, 3500), **eq(150, (250, -2.0), (2500, 2.5, 1.0), (9000, -2.0)),
+      **tube(14.0, 0.40), **comp(-28, 8.0, 1, 70, 7.0)),
+    P('STEELE', 'SINGER', ALL, 'On record (Type O): very heavy compression (lip smacks audible), flanged/chorused vocals, lots of '
+      'space. Here: the low end left in, 8:1 hard, a 12 ms comb (a still flange, it doesn\'t sweep), a big room.',
+      track=VOX, fx=vfx(12, 0.5, 0.35, 6000, rev=0.3, size=0.8, damp=0.6), **eq(50, (120, 2.5), (2500, -1.0, 1.0), (9000, 1.0)),
+      **tube(6.0, 0.30), **comp(-34, 8.0, 5, 200, 12.0)),
+    P('MUSTAINE', 'SINGER', ALL, 'Nothing on record for the Rust in Peace vocal chain (Micajah Ryan, mixed by Max Norman). By ear: '
+      'nasal, upper-mid forward, fairly dry. A guess, not a recipe.',
+      gate=-48.0, track=VOX, fx=vfx(rev=0.1, size=0.3, damp=0.5), **eq(160, (300, -2.5), (2200, 3.5, 1.1), (8000, 0.0)),
+      **tube(8.0, 0.30), **comp(-22, 4.0, 5, 100, 4.0)),
+    P('DANZIG', 'SINGER', ALL, 'Nothing on record for Danzig I/II; critics call the first one dry, the 93 remix added reverb. By '
+      'ear: a full low-mid croon, light comp, short plate and a touch of slap. A guess, not a recipe.',
+      track=VOX, fx=vfx(110, 0.1, 0.18, 3500, rev=0.18, size=0.5, damp=0.4), **eq(70, (160, 2.0), (3000, -1.0, 1.0), (9000, 1.0)),
+      **tube(7.0, 0.25), **comp(-20, 3.0, 15, 200, 3.0)),
     # ---------------- GUITAR, amp off ----------------
     P('REAMP DI', 'GUITAR', ('hpf',), 'Record the raw guitar to re-amp later: only a 30 Hz rumble cut, nothing else.',
       track=('Guitar DI', 'guitar'), **eq(30, (200, 0.0), (2500, 0.0, 1.0), (8000, 0.0))),
@@ -178,7 +268,7 @@ def clean_patch(p):
     g = p.get('gate')
     gate = float(min(-20, max(-80, g))) if isinstance(g, (int, float)) and not isinstance(g, bool) and g == g else None
     return dict(name=p['name'].strip().upper(), group='USER', on=tuple(b for b in BLOCKS if b in on), gate=gate,
-                track=None, params=params, note=p.get('note') if isinstance(p.get('note'), str) else '')
+                track=None, params=params, note=p.get('note') if isinstance(p.get('note'), str) else '', fx=clean_fx(p.get('fx')))
 
 
 def load_user(path=None):
@@ -211,7 +301,8 @@ def from_chan(c, name):
     """a patch from what an input runs now (amp off)"""
     return dict(name=name.strip().upper()[:24], group='USER', on=tuple(b for b in BLOCKS if c['on'].get(b)),
                 gate=float(c.get('gate_thr', -45.0)) if c['on'].get('gate') else None, track=None,
-                params={k: float(c[k]) for k in PARAMS if k in c}, note='')
+                params={k: float(c[k]) for k in PARAMS if k in c}, note='',
+                fx=dict(c['vfx']) if c['on'].get('fx') and c.get('vfx') else None)
 
 
 def apply(c, p):
@@ -224,4 +315,7 @@ def apply(c, p):
     c['on']['gate'] = p['gate'] is not None
     if p['gate'] is not None:
         c['gate_thr'] = p['gate']
+    c['on']['fx'] = bool(p.get('fx'))
+    if p.get('fx'):
+        c['vfx'] = dict(p['fx'])
     c['patch'] = p['name']

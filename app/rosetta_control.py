@@ -97,7 +97,7 @@ KEY_BLOCK = dict(hpf_f='hpf', low_f='low', low_g='low', peak_f='peak', peak_g='p
 
 
 def default_chan(demo=False):
-    return dict(on={k: demo and k != 'gate' for k in ('hpf', 'low', 'peak', 'high', 'tube', 'comp', 'gate')},
+    return dict(on={k: demo and k not in ('gate', 'fx') for k in ('hpf', 'low', 'peak', 'high', 'tube', 'comp', 'gate', 'fx')},
                 pre_gain=17.0, ph48=False,
                 gain=34.0, hpf_f=80.0, low_f=120.0, low_g=2.0, peak_f=2500.0, peak_g=-3.0, peak_q=1.2, high_f=8000.0,
                 high_g=3.5, drive=9.0, bias=0.2, tube_out=0.0, thresh=-18.0, ratio=4.0, attack=10.0, release=150.0,
@@ -891,6 +891,7 @@ def mic_overlay(c):
 class StripPage(QWidget):
     preset = Signal(str)                              # a strip patch or amp tone by name (strip_patches / amp_presets)
     patches = Signal()                                # open the patch browser
+    fx = Signal()                                     # the FX key changed: the main window sends the box's echo + reverb
     amp = Signal(str)
     amp_knob = Signal(str, float)                     # amp head knob: key, 0-10
     dirty = Signal()                                  # something worth saving changed
@@ -907,8 +908,8 @@ class StripPage(QWidget):
         blocks = QHBoxLayout()
         blocks.setSpacing(8)
         self.blk = {}
-        for k in ('hpf', 'low', 'peak', 'high', 'tube', 'comp', 'gate'):
-            b = BlueButton(k.upper(), checked=c['on'][k], w=74, h=TOUCH_H)
+        for k in ('hpf', 'low', 'peak', 'high', 'tube', 'comp', 'gate', 'fx'):
+            b = BlueButton(k.upper(), checked=c['on'].get(k, False), w=74 if k != 'fx' else 60, h=TOUCH_H)
             b.toggled.connect(lambda v, kk=k: self.set_on(kk, v))
             blocks.addWidget(b)
             self.blk[k] = b
@@ -1034,12 +1035,20 @@ class StripPage(QWidget):
             self.link.set_block(self.ch, block, c['on'][block], dict(c))
 
     def set_on(self, k, v):
+        c = self.chans[self.ch]
+        if k == 'fx' and v and not c.get('vfx'):
+            import strip_patches
+            c['vfx'] = dict(strip_patches.FX_DEFAULT)            # first time on: a short slap + a little room
         if v and k != 'gate' and self.gate and not self.gate(self.ch, lambda n: n['on'].__setitem__(k, True)):
             self.blk[k].checked = False
             self.blk[k].update()
             return
-        self.chans[self.ch]['on'][k] = v
-        self.push(k)
+        c['on'][k] = v
+        if k == 'fx':
+            self.fx.emit()
+            self.show_fx_tip()
+        else:
+            self.push(k)
         self.eq.update()
         self.refresh_tube()
         self.patch_edited()
@@ -1050,6 +1059,14 @@ class StripPage(QWidget):
         if c.get('patch') and not c.get('patch_edited'):
             c['patch_edited'] = True
             self.show_patch()
+
+    def show_fx_tip(self):
+        c = self.chans[self.ch]
+        f = c.get('vfx')
+        why = self.blk['fx'].blocked
+        self.blk['fx'].setToolTip(why or ('echo + reverb on this input (one per box): ' + (
+            f"echo {f['echo_ms']:.0f} ms, mix {f['echo_mix']:.2f}, feedback {f['echo_fb']:.2f} · reverb mix {f['rev_mix']:.2f}, "
+            f"size {f['rev_size']:.1f}" if f else 'a short slap + a little room')))
 
     def show_patch(self):
         c = self.chans[self.ch]
@@ -1150,11 +1167,12 @@ class StripPage(QWidget):
         self.b48.update()
         self.eq.c = c
         for key, b in self.blk.items():
-            b.checked = c['on'][key]
-            b.setVisible(not (amp_on and key in ('low', 'peak', 'high')))     # in amp mode those are the amp's tone knobs
+            b.checked = c['on'].get(key, False)
+            b.setVisible(not (amp_on and key in ('low', 'peak', 'high', 'fx')))  # in amp mode: the amp's tone + FX knobs
             b.update()
         self.sync_knobs()
         self.show_patch()
+        self.show_fx_tip()
         self.eq.update()
         self.refresh_tube()
 
@@ -1163,7 +1181,8 @@ class PatchBrowser(QDialog):
     """every patch for the shown input: four big group tabs (MIC e935, GUITAR DI, GUITAR AMP tones, YOURS), each a
     4-wide grid of finger-sized keys. One tap loads it straight away and the window stays open, so you can tap
     through them while you play."""
-    COLS = (('MIC', 'MIC  ·  e935'), ('GUITAR', 'GUITAR  ·  DI'), ('AMP', 'GUITAR  ·  AMP'), ('USER', 'YOURS'))
+    COLS = (('MIC', 'MIC  ·  e935'), ('SINGER', 'SINGERS'), ('GUITAR', 'GUITAR  ·  DI'), ('AMP', 'GUITAR  ·  AMP'),
+            ('USER', 'YOURS'))
     WIDE = 4
 
     def __init__(self, win):
@@ -1270,10 +1289,12 @@ class PatchBrowser(QDialog):
         """(column, name, note, uses the gate/FX, is yours)"""
         import amp_presets
         import strip_patches
-        out = [(p['group'], p['name'], p['note'], p['gate'] is not None, False) for p in strip_patches.FACTORY]
-        out += [('AMP', p['name'], p['note'], True, False) for p in amp_presets.FACTORY]
-        out += [('USER', p['name'], p['note'] or 'your patch', p['gate'] is not None, True) for p in strip_patches.load_user()]
-        out += [('USER', p['name'], p['note'] or 'your amp tone', True, True) for p in amp_presets.load_user()]
+        def tag(p):                                            # what in it needs strip10
+            return ' · '.join(t for t, on in (('GATE', p['gate'] is not None), ('FX', bool(p.get('fx')))) if on)
+        out = [(p['group'], p['name'], p['note'], tag(p), False) for p in strip_patches.FACTORY]
+        out += [('AMP', p['name'], p['note'], '', False) for p in amp_presets.FACTORY]
+        out += [('USER', p['name'], p['note'] or 'your patch', tag(p), True) for p in strip_patches.load_user()]
+        out += [('USER', p['name'], p['note'] or 'your amp tone', '', True) for p in amp_presets.load_user()]
         return out
 
     def build(self, items):
@@ -1287,7 +1308,7 @@ class PatchBrowser(QDialog):
         self.btns, self.notes, self.mine = {}, {}, set()
         n = dict.fromkeys(self.col, 0)
         for col, name, note, fx, mine in items:
-            b = QPushButton(name + ('   + GATE' if fx and col in ('MIC', 'GUITAR') else ''))
+            b = QPushButton(name + ('   + ' + fx if fx and col in ('MIC', 'SINGER', 'GUITAR') else ''))
             b.setCheckable(True)
             b.setMinimumHeight(TOUCH_H + 4)
             b.setToolTip(note)
@@ -1542,6 +1563,7 @@ class Main(QWidget):
         self.rec_timer.timeout.connect(self.rec_tick)
         self.strip.preset.connect(lambda name: self.apply_preset(self.cur, self.strip.ch, name))
         self.strip.patches.connect(self.patch_browser)
+        self.strip.fx.connect(lambda: (self.push_fx(self.cur, self.strip.ch), self.refresh_dsp()))
         self.patch_win = None
         self.strip.amp.connect(lambda v: self.set_amp(self.cur, self.strip.ch, v))
         self.do_timer = QTimer(self)
@@ -1594,6 +1616,8 @@ class Main(QWidget):
                 L.set_hiz(ch, c['hiz'])
             if c.get('amp', 'off') != 'off':
                 self.push_amp(k, ch)
+            elif self.fx_of(c):
+                self.push_fx(k, ch)
         self.do_log(f'unit {k + 1}: restored after power-up')
         if not self.recording:
             self.rec_info.setText(f'UNIT {k + 1}: your settings are back')
@@ -1775,6 +1799,9 @@ class Main(QWidget):
             n['amp'] = 'off'
             n['on'].update({b: b in p['on'] for b in strip_patches.BLOCKS})
             n['on']['gate'] = p['gate'] is not None
+            n['on']['fx'] = bool(p.get('fx'))
+            if p.get('fx'):
+                n['vfx'] = dict(p['fx'])
         if not self.dsp_gate(unit, ch, change):
             return
         was_amp = c.get('amp', 'off') != 'off'
@@ -1784,10 +1811,10 @@ class Main(QWidget):
         if L:
             if was_amp:                                        # a strip patch takes the input out of amp mode
                 L.set_amp(ch, 'off')
-                self.push_fx(unit, ch)
             for b in strip_patches.BLOCKS:
                 L.set_block(ch, b, c['on'][b], dict(c))
         self.push_gate(unit, ch)
+        self.push_fx(unit, ch)
         tracks = load_tracks(unit)
         if p.get('track') and not tracks[ch].get('name'):     # an unnamed input takes the patch's name + picture
             tracks[ch] = dict(name=p['track'][0], icon=p['track'][1])
@@ -1972,14 +1999,38 @@ class Main(QWidget):
         else:
             L.set_block(ch, 'gate', bool(c['on'].get('gate')), dict(c))
 
-    def push_fx(self, unit, ch):
-        """the box's echo + reverb follow the input's amp: on with it, off with it"""
+    @staticmethod
+    def fx_of(c):
+        """what the box's echo + reverb should do for this input: the amp's FX knobs, or a strip patch's FX, or None"""
         import amp_panel
+        if c.get('amp', 'off') != 'off':
+            return amp_panel.fx_params(c)
+        if c['on'].get('fx') and c.get('vfx'):
+            f = c['vfx']
+            return dict(f) if (f['echo_mix'] > 0 and f['echo_ms'] > 0) or f['rev_mix'] > 0 else None
+        return None
+
+    def push_fx(self, unit, ch):
+        """the box has ONE echo + reverb. The input that switches it on takes it (the other inputs' FX go off, said in
+        the log); switching it off on an input that doesn't own it leaves the owner alone."""
+        chans = self.units[unit]['chans']
+        c = chans[ch]
+        p = self.fx_of(c)
+        if p:
+            for k, o in enumerate(chans):
+                if k != ch and self.fx_of(o):
+                    if o.get('amp', 'off') != 'off':
+                        o['amp_echo'] = o['amp_rev'] = 0.0
+                    else:
+                        o['on']['fx'] = False
+                    self.do_log(f'unit {unit + 1}: echo/reverb moved from input {k + 1} to input {ch + 1} (one per box)')
+        else:
+            owner = next((k for k, o in enumerate(chans) if k != ch and self.fx_of(o)), None)
+            if owner is not None:
+                ch, p = owner, self.fx_of(chans[owner])
         L = self.units[unit]['link']
-        if not L:
-            return
-        c = self.units[unit]['chans'][ch]
-        L.set_fx(ch, amp_panel.fx_params(c) if c.get('amp', 'off') != 'off' else None)
+        if L:
+            L.set_fx(ch, p)
 
     def push_amp(self, unit, ch, tone_only=False):
         """send an input's amp: the amp block, and low/peak/high as its BASS/MIDDLE/TREBLE. Amp off: the input's own EQ back."""
@@ -1993,8 +2044,7 @@ class Main(QWidget):
             if not tone_only:
                 L.set_amp(ch, 'off')
                 self.push_gate(unit, ch)
-                if not any(o.get('amp', 'off') != 'off' for o in self.units[unit]['chans']):
-                    L.set_fx(ch, None)
+                self.push_fx(unit, ch)
             for b in ('low', 'peak', 'high'):
                 L.set_block(ch, b, c['on'][b], dict(c))
             return
@@ -2562,6 +2612,7 @@ class Main(QWidget):
         self.dsp_bar.set_load(pct, live, self.cur)
         ok = getattr(self.units[self.cur]['link'], 'fx_ok', None)
         self.strip.blk['gate'].set_blocked(NO_FW if ok is False else None)
+        self.strip.blk['fx'].set_blocked(NO_FW if ok is False else None)
         if self.patch_win:
             self.patch_win.set_fx_ok(ok)
         if self.strip.amp_head.fx_ok != ok:
@@ -2597,8 +2648,13 @@ class Main(QWidget):
         c = self.units[unit]['chans'][ch]
         if block == 'amp':
             self.set_amp(unit, ch, 'off')
-        elif block in ('echo', 'reverb'):                       # the amp's FX knob to OFF
-            c['amp_echo' if block == 'echo' else 'amp_rev'] = 0.0
+        elif block in ('echo', 'reverb'):                       # the amp's FX knob to OFF, or the patch FX's part
+            if c.get('amp', 'off') != 'off':
+                c['amp_echo' if block == 'echo' else 'amp_rev'] = 0.0
+            elif c.get('vfx'):
+                c['vfx']['echo_mix' if block == 'echo' else 'rev_mix'] = 0.0
+                if c['vfx']['echo_mix'] <= 0 and c['vfx']['rev_mix'] <= 0:
+                    c['on']['fx'] = False
             self.push_fx(unit, ch)
             if unit == self.cur:
                 self.strip.show_chan(self.strip.ch)
