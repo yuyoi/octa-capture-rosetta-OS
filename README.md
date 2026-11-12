@@ -38,9 +38,16 @@ A PC editor for the OCTA-CAPTURE running Rosetta OS, styled after the unit's fro
 - **EQ you drag:** HPF, low shelf, peak, high shelf, drawn with the exact maths the unit's DSP runs.
 - **Tube** (glows brighter with DRIVE) and **compressor** with the unit's real gain-reduction meter.
 - **Preamp gain + 48V** through Roland's own protocol (decoded in [re/CTRL_PROTOCOL.md](re/CTRL_PROTOCOL.md)), live input meters.
-- Mixer, routing and reverb pages are next.
+- **Rosetta amp head** for guitar: CLEAN / CRUNCH / LEAD / CRANKED / FUZZ channels, HARD CLIP, GAIN-BASS-MIDDLE-TREBLE-PRESENCE-MASTER, and a ROSETTA FX section (GATE, ECHO, TIME, REVERB). It runs in the box's DSP, not on the PC, so it adds no delay.
+- **Tone presets:** six factory tones (HOLY WARS, FUNERALOPOLIS, FLOODS, DETROIT SOLO, CROWBAR, SABBATH) plus as many of your own as you like, saved on the PC. Click the amp's screen.
+- **DSP bar:** shows live how much of the box's DSP is in use. It refuses an add that would go past 80 % ("FULL · REMOVE SOMETHING"), and its task list switches anything off with one X.
+- **Touch-friendly:** 40 px buttons and big EQ nodes you can grab from a finger-width away. Slide sideways off a knob for fine steps. Hold an input for its menu.
+- Mixer and routing pages and a scene-bank panel are next.
+
+<p align="center"><img src="docs/img/rosetta_amp_head.png" width="820" alt="Rosetta amp head in Rosetta Octa Control: FUNERALOPOLIS fuzz tone with HARD CLIP, tube window, gain/tone knobs and the ROSETTA FX gate, echo and reverb"></p>
 
 - **One-tap REC** and ready-made chains (VOCAL, GUITAR, FLAT).
+- **MIC** button: corrects an input for its microphone ([docs/MIC_COMP.md](docs/MIC_COMP.md)).
 - **MONITOR OTHER BOX** and **AMP** buttons. Monitoring two boxes is its own topic, because anything through the PC has delay: [docs/MONITORING.md](docs/MONITORING.md). How the amp works: [docs/AMP.md](docs/AMP.md).
 
 Run: `python app/rosetta_control.py` (Python 3, `PySide6`, `mido`, `python-rtmidi`; close Roland's Control Panel first).
@@ -60,11 +67,17 @@ It needs a Rosetta lab build on the unit. `--demo` runs it without a unit.
 | **CPU-load meter**: how much DSP is free | ✅ on hardware (stock load ~39 %) |
 | **Channel strip** on all 8 inputs, own settings each: gain → HPF → tube → low/peak/high EQ → comp → limiter ([docs/STRIP.md](docs/STRIP.md)) | ✅ on hardware (test builds), measured by loopback |
 | **STRIP page** on the LCD (replaces AUTO-SENS) and the **Rosetta Channel page** (knob, big gain in dB, VU) | ✅ on hardware (test builds) |
-| **Rosetta Octa Control** PC app: strip editor, named inputs, preamp gain/48V, meters | ✅ on hardware (v1) |
+| **Fast audio path**: the strip runs from the DSP's fastest memory, empty inputs are skipped; a full input costs 677 cycles a sample (was 1,003) | ✅ on hardware |
+| **Rosetta Octa Control** PC app: strip editor, named inputs, preamp gain/48V, meters, live DSP bar, touch-friendly | ✅ on hardware |
 | **One-tap recorder** in the app: every input on two boxes over our own USB path, retimed onto one timeline | ✅ on hardware (sample-exact sync between boxes not yet proven) |
 | **USB monitoring** between two boxes through the PC, about 15 ms ([docs/MONITORING.md](docs/MONITORING.md)) | ✅ on hardware, needs libusbK |
-| **Guitar amp mode** in the firmware: gain stages, tone stack, speaker, no PC delay ([docs/AMP.md](docs/AMP.md)) | 🧪 built and host-tested, not on hardware yet |
-| **Gate**, presets, settings that survive power-off, mixer/routing pages in the app | 🚧 next |
+| **Guitar amp** in the firmware: two gain stages, tone stack, speaker; 5 channels incl. FUZZ, the amp head in the app, 6 factory tones + your own ([docs/AMP.md](docs/AMP.md)) | ✅ on hardware |
+| **HARD CLIP**, **noise gate** (opens on the same sample, no lookahead), **ROSETTA FX** echo (up to 1.36 s) and reverb: the dry sound stays on time | 🧪 built (test build strip10) and host-tested under AddressSanitizer, not on hardware yet |
+| **Scenes on the box**: DISPLAY opens a BANK of 16 whole-box scenes plus TEMP, which is saved with Roland's own power-off save; through Roland's flash driver only ([docs/SCENES.md](docs/SCENES.md)) | 🧪 built (strip10) and host-tested, not on hardware yet |
+| **Hi-Z on the Rosetta Channel page** (VALUE push), so both units can use the knob page | 🧪 built (strip10), not on hardware yet |
+| **Settings that survive a power cut**: chains, gains, Hi-Z and routing come back by themselves, and the app reconnects after the boxes restart | 🧪 built and tested off-hardware, not yet on the boxes |
+| **Mic compensation**: fit the EQ to a mic's published curve, towards flat or towards another mic ([docs/MIC_COMP.md](docs/MIC_COMP.md)) | 🧪 built and tested off-hardware, not yet on the boxes |
+| Scene bank panel, mixer/routing pages in the app, gate threshold knob on the strip page | 🚧 next |
 | **Solo mode**: fewer active channels, more DSP each (multiband comp, de-esser, delay) | 🚧 planned |
 | **Clip guard** in place of AUTO-SENS: preamp gain steps down near clipping and the same gain is added back digitally, so the monitor level stays put | 🚧 planned |
 

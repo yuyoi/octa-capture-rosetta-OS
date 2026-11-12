@@ -8,7 +8,9 @@
 //         quit
 //         sx <box> <hex>  send one SysEx message to a box (lab / Roland parameter messages)
 //         mon 1|0|t      the other box's inputs out of OUT 1-2 of the box on libusbK / off / -50 dBFS test tone
-// stdout: READY <boxes> <rate> | NOBOX | M <box> <10 x peak dBFS> | REC | DONE <seconds> <dropouts> <ratio_ppm> <kept...>
+//         feed <name>|off  send the inputs set by fgain to the playback device whose name contains <name> (feed.h)
+//         fgain <box> <g1..g10>  per-input send gains, 0 = not sent
+// stdout: READY <boxes> <rate> <serials...> | NOBOX | M <box> <10 x peak dBFS> | REC | DONE <seconds> <dropouts> <ratio_ppm> <kept...>
 //         S <box> <hex>   SysEx from a box
 //         ERR <text>
 // Copyright (C) 2026 JunkSmithWizard + Claude. GPLv3, see dual/LICENSE.
@@ -33,6 +35,7 @@
 #include <vector>
 
 #include "core/drift.h"
+#include "feed.h"
 #include "kbox.h"
 
 #pragma comment(lib, "winusb.lib")
@@ -155,6 +158,7 @@ struct MonRing {
     void flush() { r.store(w.load(std::memory_order_acquire), std::memory_order_release); }
 };
 static MonRing g_ring;
+static Feed g_feed;                                     // send to stream (feed.h)
 
 struct Block {
     std::vector<BYTE> d[INPUTS];
@@ -514,6 +518,7 @@ struct Box {
                         g_ring.push((int)std::max<long long>(-2147483647LL, std::min<long long>(2147483647LL, sum)));
                     }
                 }
+                g_feed.capture(n, s, fr, bpf, ch);       // inputs ticked for the stream (after their strips), mixed
                 if (ch >= 12) {                          // this box's main mix (capture 11-12): shows what its outputs carry
                     const BYTE *m = s;
                     for (int i = 0; i < fr; i++, m += bpf) {
@@ -797,7 +802,17 @@ int main() {
             say("ERR box %d start failed (error %lu)\n", b->n + 1, GetLastError());
             return 1;
         }
-    say("READY %zu %d\n", boxes.size(), rate);
+    {                                                    // READY <boxes> <rate> <serial of box 1> [<serial of box 2>]
+        std::string s = "READY " + std::to_string(boxes.size()) + " " + std::to_string(rate);
+        for (size_t i = 0; i < boxes.size(); i++) {      // the app tells the boxes apart by these, not by their order
+            const std::wstring &w = devs[i].instance;
+            const size_t p = w.find_last_of(L'\\');
+            s += ' ';
+            for (wchar_t c : (p == std::wstring::npos ? w : w.substr(p + 1)))
+                s += (c > 32 && c < 127) ? (char)c : '_';
+        }
+        say("%s\n", s.c_str());
+    }
     char line[1024];
     while (fgets(line, sizeof line, stdin)) {
         line[strcspn(line, "\r\n")] = 0;
@@ -829,6 +844,22 @@ int main() {
             g_tone = m == 't';
             if (m == '1') g_ring.flush();
             g_mon = m != '0';
+        } else if (!strncmp(line, "feed ", 5)) {         // feed <part of a playback device's name> | feed off
+            if (!strcmp(line + 5, "off")) {
+                g_feed.end();
+                say("FEED off\n");
+            } else {
+                const int need = MultiByteToWideChar(CP_UTF8, 0, line + 5, -1, nullptr, 0);
+                std::wstring w(need > 0 ? need - 1 : 0, L' ');
+                if (need > 1) MultiByteToWideChar(CP_UTF8, 0, line + 5, -1, &w[0], need);
+                g_feed.start(w, rate, [](const char *fmt, auto... a) { say(fmt, a...); });
+            }
+        } else if (!strncmp(line, "fgain ", 6)) {        // fgain <box> <10 gains, input 1-10>: 0 = not sent
+            int box = -1;
+            float g[Feed::CH] = {};
+            const int got = sscanf(line + 6, "%d %f %f %f %f %f %f %f %f %f %f", &box, g, g + 1, g + 2, g + 3, g + 4, g + 5, g + 6,
+                                   g + 7, g + 8, g + 9);
+            if (got >= 2) g_feed.set_gains(box, g);
         } else if (!strcmp(line, "stop")) {
             if (g_rec) end_take(boxes);
         } else if (!strcmp(line, "quit")) {
@@ -836,6 +867,7 @@ int main() {
         }
     }
     if (g_rec) end_take(boxes);
+    g_feed.end();
     g_quit = true;
     for (auto &b : boxes) {
         if (b->kd) {

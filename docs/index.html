@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Roland OCTA-CAPTURE Mod: Rosetta OS custom firmware (UA-1010)</title>
-<meta name="description" content="Roland OCTA-CAPTURE (UA-1010) mod: free custom firmware for the Octa Capture audio interface. Rosetta boot screen works on hardware; per-channel EQ and comp channel strip in progress. Built from Roland's own v1.51 update.">
+<meta name="description" content="Roland OCTA-CAPTURE (UA-1010) mod: free custom firmware for the Octa Capture audio interface. Rosetta boot screen, per-input channel strip (EQ, tube, comp) and a guitar amp running in the unit's own DSP, plus the Rosetta Octa Control PC editor. Built from Roland's own v1.51 update.">
 <meta name="keywords" content="Roland OCTA-CAPTURE, Octa Capture, OctaCapture, UA-1010, OCTA-CAPTURE mod, OCTA-CAPTURE firmware, OCTA-CAPTURE custom firmware, OCTA-CAPTURE EQ, OCTA-CAPTURE update, UpdOcta.dat, Roland audio interface mod, Blackfin firmware">
 <link rel="canonical" href="https://yuyoi.github.io/octa-capture-rosetta-OS/">
 <link rel="icon" type="image/png" href="img/hexgirl_icon.png">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Rosetta OS">
 <meta property="og:title" content="Roland OCTA-CAPTURE Mod: Rosetta OS custom firmware">
-<meta property="og:description" content="Free custom firmware for the Roland OCTA-CAPTURE (UA-1010): a new boot screen that runs on real hardware, with a per-channel EQ and comp channel strip next.">
+<meta property="og:description" content="Free custom firmware for the Roland OCTA-CAPTURE (UA-1010): new boot screen, a channel strip on every input and a guitar amp in the unit's own DSP, with a PC editor.">
 <meta property="og:url" content="https://yuyoi.github.io/octa-capture-rosetta-OS/">
 <meta property="og:image" content="https://yuyoi.github.io/octa-capture-rosetta-OS/img/rosetta_splash_v4_preview.png">
 <meta property="og:image:width" content="512">
@@ -20,7 +20,7 @@
 <meta property="og:image:alt" content="OCTA-CAPTURE LCD showing the Rosetta boot screen">
 <meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"OCTA-CAPTURE Rosetta OS","applicationCategory":"MultimediaApplication","operatingSystem":"Roland OCTA-CAPTURE UA-1010 (system v1.51)","description":"Custom firmware mod for the Roland OCTA-CAPTURE (UA-1010) USB audio interface: a new boot screen tested on hardware, update-file tools (unpack, pack, checksum), and a per-channel EQ and compressor channel strip in progress.","url":"https://yuyoi.github.io/octa-capture-rosetta-OS/","image":"https://yuyoi.github.io/octa-capture-rosetta-OS/img/rosetta_splash_v4_preview.png","sameAs":"https://github.com/yuyoi/octa-capture-rosetta-OS","downloadUrl":"https://github.com/yuyoi/octa-capture-rosetta-OS","author":{"@type":"Person","name":"JunkSmithWizard","url":"https://github.com/yuyoi"},"license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"OCTA-CAPTURE Rosetta OS","applicationCategory":"MultimediaApplication","operatingSystem":"Roland OCTA-CAPTURE UA-1010 (system v1.51)","description":"Custom firmware mod for the Roland OCTA-CAPTURE (UA-1010) USB audio interface: a new boot screen, update-file tools (unpack, pack, checksum), a per-input channel strip (HPF, tube, EQ, comp) and a guitar amp in the unit's DSP, and the Rosetta Octa Control PC editor.","url":"https://yuyoi.github.io/octa-capture-rosetta-OS/","image":"https://yuyoi.github.io/octa-capture-rosetta-OS/img/rosetta_splash_v4_preview.png","sameAs":"https://github.com/yuyoi/octa-capture-rosetta-OS","downloadUrl":"https://github.com/yuyoi/octa-capture-rosetta-OS","author":{"@type":"Person","name":"JunkSmithWizard","url":"https://github.com/yuyoi"},"license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
 <style>
 :root{--bg:#f4f6f8;--paper:#fff;--fg:#15181c;--muted:#5a6068;--rule:#d3d8de;--bar:#1f3a5f;--bar-fg:#f4f6f8;--accent:#1f5fae;--btn-fg:#fff}
@@ -30,6 +30,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 "Helvetica Neue
 .wrap{max-width:920px;margin:0 auto;padding:0 16px}
 header{padding:40px 0 24px;text-align:center}
 .badge{width:96px;height:96px;image-rendering:pixelated}
+.shot{width:100%;height:auto;border-radius:6px;margin-top:16px}
 .lcdimg{width:100%;max-width:640px;height:auto;image-rendering:pixelated;border-radius:6px;border:6px solid #2a2f36;margin-top:16px}
 h1{font-size:2rem;line-height:1.2;margin:16px 0 8px}
 .lede{color:var(--muted);font-size:1.1rem;margin:0 auto;max-width:660px}
@@ -55,8 +56,10 @@ a{color:var(--accent)}
 <header>
 <img class="badge" src="img/hexgirl_icon.png" width="96" height="96" alt="Rosetta OS Hex Girl badge">
 <h1>Roland OCTA-CAPTURE Mod: Rosetta OS custom firmware</h1>
-<p class="lede">Free custom firmware for the Roland OCTA-CAPTURE (UA-1010) USB audio interface, built from Roland's own v1.51 update. The new boot screen runs on real hardware. Next: a channel strip with high-pass, EQ and comp on every mic input.</p>
+<p class="lede">Free custom firmware for the Roland OCTA-CAPTURE (UA-1010) USB audio interface, built from Roland's own v1.51 update. Running on real units: a new boot screen, a channel strip on all 8 inputs, a guitar amp in the unit's own DSP (no PC delay) and the Rosetta Octa Control PC editor.</p>
 <img class="lcdimg" src="img/rosetta_splash_v4_preview.png" width="512" height="256" alt="The OCTA-CAPTURE's 128x64 LCD showing the Rosetta boot screen: Hex Girl peeking over the word ROSETTA">
+<img class="shot" src="img/rosetta_octa_control.png" width="1600" height="991" alt="Rosetta Octa Control: PC editor for the OCTA-CAPTURE with named inputs, a draggable EQ curve, tube and compressor">
+<img class="shot" src="img/rosetta_amp_head.png" width="1400" height="750" alt="Rosetta amp head: FUNERALOPOLIS fuzz tone with gain, tone and ROSETTA FX knobs">
 <div class="cta">
 <a class="btn" href="https://github.com/yuyoi/octa-capture-rosetta-OS">Get it on GitHub</a>
 <a class="btn alt" href="https://github.com/yuyoi/octa-capture-rosetta-OS/blob/main/docs/FLASHING.md">How to flash</a>
@@ -69,8 +72,12 @@ a{color:var(--accent)}
 <div class="card"><span class="tag ok">on hardware</span><b>Rosetta boot screen</b><span>Hex Girl peeking over ROSETTA on the 128x64 LCD, with the boot bar along the bottom.</span></div>
 <div class="card"><span class="tag ok">on hardware</span><b>Update-file tools</b><span>Unpack, patch and repack UpdOcta.dat with correct checksums. The boot screen was flashed with them.</span></div>
 <div class="card"><span class="tag ok">tested</span><b>One-command build</b><span>From Roland's own zip to a checked UpdOcta.dat, byte-identical to the build tested on a real unit.</span></div>
-<div class="card"><span class="tag next">next</span><b>CPU-load meter</b><span>Shows how much of the Blackfin DSP is free, which sets the budget for the effects.</span></div>
-<div class="card"><span class="tag next">planned</span><b>Channel strip, all 8 mic inputs</b><span>Gain, high-pass, gate, 4-band EQ and comp per channel, each with its own settings, plus presets like Vocal, Kick and Guitar amp.</span></div>
+<div class="card"><span class="tag ok">on hardware</span><b>Channel strip, all 8 inputs</b><span>Gain, high-pass, tube, low/peak/high EQ and comp per input, each with its own settings. Measured by loopback against the maths.</span></div>
+<div class="card"><span class="tag ok">on hardware</span><b>Guitar amp in the DSP</b><span>Two gain stages, tone stack and speaker, CLEAN to FUZZ, no PC delay. Six factory tones (HOLY WARS, FUNERALOPOLIS, SABBATH ...) plus your own.</span></div>
+<div class="card"><span class="tag ok">on hardware</span><b>Rosetta Octa Control</b><span>PC editor in the unit's look: drag the EQ, amp head, named inputs, one-tap REC for two boxes, a live DSP bar. Touch-friendly.</span></div>
+<div class="card"><span class="tag ok">on hardware</span><b>Lab and CPU-load meter</b><span>Read, write and run code on the live unit over USB-MIDI, and see how much DSP is free.</span></div>
+<div class="card"><span class="tag next">built, testing</span><b>Gate, echo, reverb, hard clip</b><span>Noise gate that opens on the same sample, echo up to 1.36 s and reverb, with the dry sound kept on time. Host-tested, next on hardware.</span></div>
+<div class="card"><span class="tag next">built, testing</span><b>Scenes on the box</b><span>Press DISPLAY for a bank of 16 whole-box scenes; the current sound comes back after a power cut.</span></div>
 <div class="card"><span class="tag next">planned</span><b>Solo mode and clip guard</b><span>Solo mode: fewer channels, bigger effects. Clip guard, in place of AUTO-SENS: the preamp steps down near clipping while the monitor level stays put.</span></div>
 </div>
 

@@ -24,6 +24,7 @@ HOOKS = {                                # section: (address, stock bytes)
     'h_gb': (0x30de0c, bytes.fromhex('28e4')),        # gate-B target
     'h_ga': (0x30de96, bytes.fromhex('2d82')),        # gate-A target
     'h_midi': (0x36949a, bytes.fromhex('f1a37860')),  # R1 = [SP+0x3c]; R0 = 0xf  (USB-MIDI dispatcher)
+    'h_save': (0x31d1cc, bytes.fromhex('02e3104b')),  # CALL 0x3667ec  (close, in Roland's settings save 0x31d160)
 }
 
 

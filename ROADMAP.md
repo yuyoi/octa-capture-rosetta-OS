@@ -49,7 +49,22 @@ Per mic channel, all 8, each with its own settings:
 
 ## Ideas (user, 2026-11-08)
 - **Guitar amp section:** an input mode that replaces the strip's tube/comp with preamp stages, a tone stack and a speaker curve, in the firmware so it monitors with no PC delay. Speaker as a few biquads; a real impulse response needs a CPU check first.
-- **Mic compensation mode:** add a mic's published response graph on the PC, fit it with biquads, and correct towards flat or towards another mic's curve. The fit is PC-only; more than the strip's current EQ bands needs firmware. Published graphs are averages, on-axis, so it's a tone shaping tool, not exact correction. User's mics added once it works (e935 first).
+- **Mic compensation mode:** built (docs/MIC_COMP.md), uses the strip's three EQ bands, e935 curve included. Not tried on the boxes yet. More bands than that needs firmware. Add the user's other mics.
+
+## Slimmer DSP (user, 2026-11-10)
+Measured today: about 200 cycles per biquad, a full chain 12-14 % per input. Keep the total under about 70 % (SNEN overrun note in re/AUDIO_PATH.md), which is about 13 bands or 2 full chains. Order, biggest win first; all numbers after step 0 are estimates until the meter runs:
+0. **Free test, no flash:** with the lab meter, switch Roland's reverb and stock comps off and see whether their 39 % drops.
+1. **Move `_bq_run` (and the strip loop) into free L1 code** (0xFFA048BE.., ~14 KB, inferred free). It is about 45 instructions but lives in SDRAM, so the cost should be cache misses: expect about 50-60 cycles instead of 200. Copy post-scan via MDMA/ITEST (core can't write L1 code, and normal loads from it fault), so the update combo still works if it goes wrong.
+2. **One-pole DC blocker** instead of the tube's fifth biquad, about 20 cycles.
+3. **Slim band for peak and high shelf:** 32x16 feed-forward taps (14 multiplies instead of 20). Keep full 32x32 for HPF and low shelf, where poles near 1 need it. Bit-exact tests have to be redone for the slim path.
+4. Target: about 50 bands, or 6-7 full chains under 70 %. All 8 needs step 0 to free something.
+Status 2026-11-10: steps 1-3 built as FAT/SLIM modes (docs/STRIP.md), plus the SLIM comp (detector every 8 samples). Host-tested only. Next: `bench` on a unit, then build it into the firmware (arm_stub loads it) instead of the live upload.
+
+## Ideas (user, 2026-11-11)
+- **Scarlett clock that never goes dead:** the Scarlett is slaved to unit 1's coax (S/PDIF). When unit 1 is off or updating it has no clock and mutes everything, front preamps included. The Focusrite keeper (app/focusrite.py) should switch it to Internal when S/PDIF is missing and back to S/PDIF when unit 1's coax returns. Not while another session is using the Focusrite.
+- Hex girl in Octa Control as a chibi character the user draws (not the reused desktop/README icon). Left out of the amp head until then.
+- Amp head (app/amp_panel.py): modern OCTA-look head done; hear it on hw with the Les Paul.
+- **Amp library, all in the program (user, 2026-11-11):** one folder per amp under app/amps/: DSP settings (the 6 filters, 2 clip stages: gain split, bias, soft/hard; the tone stack's frequencies; knob ranges) + its own look (colours, faceplate, knobs, optional art the user draws or makes in ComfyUI). Saved tones (name + knob positions) per amp, as many as wanted. Anything inside the firmware's amp shape is app-only, no flash. A new shape (3rd stage, cab IR, gate inside the amp, 2 amps a box) = firmware. Build after the amp + FUZZ have been heard on hw.
 
 ## Later
 - A delay per channel. Costs memory, not CPU: about 384 KB per second at 96 kHz. Find the RAM size first.

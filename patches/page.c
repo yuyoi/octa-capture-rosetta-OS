@@ -14,6 +14,7 @@
  */
 #include "strip.h"
 #include "page_cfg.h"
+#include "scene.h"
 
 typedef short s16;
 typedef unsigned short u16;
@@ -80,6 +81,10 @@ static u16 hold[NCH];
 static u16 holdt[NCH];
 static int fs;
 static int open_blk = -1;              /* Channel page COMP key -> open the STRIP page on that block */
+static int open_bank;                   /* HOME DISPLAY press -> open this screen as the BANK page (mode 2) */
+static int bsel = 1, btop = 1, bconfirm; /* BANK page: selected slot 1-16, first row shown, WRITE asked */
+static const char *bmsg = "";           /* BANK page: last result, shown in the title line */
+static int bmsg_slot;
 
 /* ---------------- small math (UI rate only; soft float from libgcc) ---------------- */
 static double dsin(double x)            /* |x| <= pi */
@@ -390,6 +395,16 @@ static void meters_tick(void)
 }
 
 /* ---------------- drawing ---------------- */
+s16 *page_vals(void)                    /* scene.c: the page's values go into every scene */
+{
+    return &val[0][0][0];
+}
+
+void page_vals_loaded(void)
+{
+    inited = 1;
+}
+
 static void init_vals(void)
 {
     for (int c = 0; c < NCH; c++)
@@ -486,6 +501,129 @@ static void draw_editor(int g)
     vbar(g, 123, 0, 127, 63, gr > 62 ? 62 : gr, 1);
 }
 
+/* ---------------- BANK page: TEMP + 16 scenes (scene.c). VALUE/GAIN turn or CH </> = slot, VALUE push = LOAD,
+ * GAIN push = WRITE (asks first: VALUE push = yes, anything else = no), DISPLAY = HOME. ---------------- */
+static void draw_bank(int g)
+{
+    char t[24];
+    R_FONT(g, 18);
+    R_STR(g, 0, 0, bconfirm ? "WRITE?" : "BANK");
+    if (*bmsg) {
+        char *p = put_str(t, bmsg);
+        if (bmsg_slot) {
+            *p++ = ' ';
+            p = put_int(p, bmsg_slot, 0, 0);
+        }
+        *p = 0;
+        R_STR(g, 127 - (int)slen(t) * 6, 0, t);
+    }
+    R_LINE(g, 0, 11, 127, 11);
+    if (bconfirm) {
+        char *p = put_str(t, "TEMP -> ");
+        if (bsel < 10)
+            *p++ = '0';
+        p = put_int(p, bsel, 0, 0);
+        *p = 0;
+        R_STR(g, 4, 18, t);
+        const char *n = scene_name(bsel);
+        R_STR(g, 4, 30, *n ? n : "(empty)");
+        R_STR(g, 4, 44, "VALUE PUSH = YES");
+        R_STR(g, 4, 54, "OTHER KEY  = NO");
+        return;
+    }
+    if (bsel < btop)
+        btop = bsel;
+    if (bsel >= btop + 5)
+        btop = bsel - 4;
+    for (int i = 0; i < 5 && btop + i <= SC_NBANK; i++) {
+        int s = btop + i, y = 13 + i * 10;
+        char *p = t;
+        if (s < 10)
+            *p++ = '0';
+        p = put_int(p, s, 0, 0);
+        *p++ = s == scene_loaded() ? '*' : ' ';
+        *p = 0;
+        R_STR(g, 2, y, t);
+        const char *n = scene_name(s);
+        R_STR(g, 24, y, *n ? n : "-");
+        if (s == bsel) {
+            s16 r[4] = { 0, (s16)(y - 1), 121, (s16)(y + 9) };
+            R_INVERT(g, r);
+        }
+    }
+    if (btop > 1)
+        R_LINE(g, 124, 13, 126, 13);
+    if (btop + 5 <= SC_NBANK)
+        R_LINE(g, 124, 62, 126, 62);
+}
+
+static int bank_key(int key)
+{
+    if (bconfirm) {
+        bconfirm = 0;
+        if (key == K_CURSOR) {
+            const char *n = scene_name(bsel);
+            char nm[16];
+            if (*n && *n != '?') {
+                for (int i = 0; i < 16; i++)
+                    nm[i] = n[i];
+            } else {
+                char *p = put_str(nm, "USER ");
+                if (bsel < 10)
+                    *p++ = '0';
+                p = put_int(p, bsel, 0, 0);
+                while (p < nm + 16)
+                    *p++ = 0;
+            }
+            bmsg = scene_store(bsel, nm) ? "WRITTEN" : "FAILED";
+            bmsg_slot = bsel;
+        }
+        R_REDRAW();
+        return 1;
+    }
+    switch (key) {
+    case K_CURSOR:
+        if (!*scene_name(bsel)) {
+            bmsg = "EMPTY";
+        } else {
+            bmsg = scene_recall(bsel) ? "LOADED" : "FAILED";
+        }
+        bmsg_slot = bsel;
+        break;
+    case K_GAIN_SW:
+        bconfirm = 1;
+        bmsg = "";
+        break;
+    case K_CH_L:
+    case K_CH_R:
+        bsel += key == K_CH_R ? 1 : -1;
+        if (bsel < 1)
+            bsel = SC_NBANK;
+        if (bsel > SC_NBANK)
+            bsel = 1;
+        break;
+    case K_DISPLAY:
+    case K_MIX_SEL:
+        return 0;                       /* DISPLAY release -> HOME, hold -> SYSTEM; MIX_SEL -> MIXER (stock) */
+    default:
+        break;
+    }
+    R_REDRAW();
+    return 1;
+}
+
+/* HOME's KeyUp (vtable word 0x401cdc, stock 0x3139a0 = "not mine"): a short DISPLAY press opens the BANK page. A
+ * 1 s hold has already gone to SYSTEM before the release, so it never gets here. */
+int home_keyup(int self, int key)
+{
+    (void)self;
+    if (key != K_DISPLAY)
+        return 0;
+    open_bank = 1;
+    R_SWITCH(18);
+    return 1;
+}
+
 /* ---------------- screen methods (vtable slots of screen 18) ---------------- */
 int pg_create(int self)
 {
@@ -503,6 +641,16 @@ int pg_create(int self)
         top = 0;
     }
     open_blk = -1;
+    if (open_bank) {
+        mode = 2;
+        bconfirm = 0;
+        bmsg = "";
+        bmsg_slot = 0;
+        if (scene_loaded())
+            bsel = scene_loaded();
+        scene_names();
+    }
+    open_bank = 0;
     return 0;
 }
 
@@ -518,7 +666,9 @@ int pg_draw(int self)
     update_rate();
     meters_tick();
     R_CLEAR(g);
-    if (mode == 0)
+    if (mode == 2)
+        draw_bank(g);
+    else if (mode == 0)
         draw_grid(g);
     else
         draw_editor(g);
@@ -537,6 +687,8 @@ static void enter(int b)
 int pg_key(int self, int key)
 {
     (void)self;
+    if (mode == 2)
+        return bank_key(key);
     switch (key) {
     case K_GAIN_SW:
         if (mode) {
@@ -615,6 +767,16 @@ int pg_enc(int self, int id, int delta)
     int d = delta > 0 ? 1 : -1;
     if (id == E_MONITOR)
         return 0;                       /* stock (monitor level) */
+    if (mode == 2) {                    /* BANK: either knob picks the slot; turning cancels a WRITE question */
+        bconfirm = 0;
+        bsel += d;
+        if (bsel < 1)
+            bsel = 1;
+        if (bsel > SC_NBANK)
+            bsel = SC_NBANK;
+        R_REDRAW();
+        return 1;
+    }
     if (!mode) {                        /* grid: either knob picks the channel */
         ch = (ch + d + NCH) & 7;
     } else if (id == E_GAIN) {          /* navigate rows */
@@ -631,7 +793,8 @@ int pg_enc(int self, int id, int delta)
 /* ================= Rosetta Channel page (screen 2, vtable 0x401538) =================
  * User spec (2026-11-07): GAIN big in dB + a VU (wave view later), nothing else. 48V tag only when on, CLIP flag.
  * CH </> and VALUE turn = channel, GAIN turn = preamp gain, GAIN push = STRIP page, COMP = STRIP comp block,
- * 48V = toggle phantom, DISPLAY / MIX_SEL = stock. Preamp gain raw / 2 = dB (measured on the unit). */
+ * 48V = toggle phantom, VALUE push = Hi-Z on inputs 1-2 (preamp param 12, the switch Roland's own page has; 2026-11-11 so
+ * unit 1's guitar can use this page too), DISPLAY / MIX_SEL = stock. Preamp gain raw / 2 = dB (measured on the unit). */
 static u16 clip_t[NCH];
 
 static int cur_ch(void)
@@ -756,6 +919,11 @@ int chp_draw(int self)
     R_STR(g, 56 + (w > 0 && w < 70 ? w : 40) + 3, 23, "DB");
     R_FONT(g, 12);
     R_STR(g, 56, 36, "GAIN");
+    if (c < 2 && R_GET(PREAMP, 12, c)) {        /* Hi-Z, inputs 1-2 only */
+        R_STR(g, 92, 36, "HI-Z");
+        s16 r[4] = { 90, 35, 116, 44 };
+        R_INVERT(g, r);
+    }
 
     /* segment VU: 24 x (2 px + 1 gap) = x 56..127, -60..0 dBFS, peak-hold segment, top 6 dB hollow */
     int lit = peak_px(pk, 24), hs = hold[c] * 24 / 60;
@@ -795,8 +963,11 @@ int chp_key(int self, int key)
     case K_PH48V:
         R_STEP(PREAMP, 11, R_GET(PREAMP, 11, c) ? -1 : 1, c);
         break;
-    case K_CURSOR:
-        return 1;
+    case K_CURSOR:                              /* Hi-Z on inputs 1-2; nothing on 3-8 */
+        if (c >= 2)
+            return 1;
+        R_STEP(PREAMP, 12, R_GET(PREAMP, 12, c) ? -1 : 1, c);
+        break;
     default:
         return 0;                               /* DISPLAY, MIX_SEL: stock */
     }
@@ -837,8 +1008,13 @@ void page_install(void)
                          (u32)chp_create, (u32)pg_destroy, (u32)chp_key, (u32)chp_keyup, (u32)chp_draw, (u32)chp_enc };
     for (int i = 0; i < (KNOB_CHANNEL ? 12 : 6); i++)   /* page_cfg.h: 0 = keep Roland's Channel page (it has Hi-Z) */
         *(volatile u32 *)slot[i] = fn[i];
+    if (*(volatile u32 *)0x401cdc == 0x3139a0u)        /* HOME KeyUp, only over the stock word: DISPLAY -> BANK */
+        *(volatile u32 *)0x401cdc = (u32)home_keyup;
     volatile char *lab = (volatile char *)0x41c7a0;     /* "SENS" (param 0 name, 8-byte slot) */
     if (lab[0] == 'S' && lab[1] == 'E' && lab[2] == 'N' && lab[3] == 'S' && lab[4] == 0) {
         lab[0] = 'G'; lab[1] = 'A'; lab[2] = 'I'; lab[3] = 'N';
     }
+    if (!inited)
+        init_vals();
+    scene_boot();                                       /* TEMP: how she sounded at the last power-off (scene.c) */
 }

@@ -50,6 +50,10 @@ __pycache__/
 *.zip
 tools/*_memprobe.json
 /app/tracks.json
+/app/setup.json
+/app/setup.json.tmp
 /app/__pycache__/
 /app/do.txt
 /app/do.out
+/app/do_demo.out
+/app/amp_presets_user.json

@@ -24,7 +24,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 PREAMP = 0x43f444
 R_GET = 0x3097e4
 METER_IN = 0x43ed10
-BLOCKS = ('hpf', 'low', 'peak', 'high', 'tube', 'comp')
+
+
+def fit_eq(kind, k):
+    """(coefficients that fit the box's Q30, dB of level they leave out). A HIGH shelf boost arrives here already as
+    the identical low-shelf cut (exact, 0.0000 dB); a big wide PEAK boost has its gain (b0-b2) halved until it fits,
+    6.02 dB a halving. The caller puts the left-out level back after the comp."""
+    n = 0
+    while max(abs(x) for x in k[:3]) / (1 << n) >= 1.9999 and n < 4:
+        n += 1
+    if not n:
+        return k, 0.0
+    return [x / (1 << n) for x in k[:3]] + list(k[3:]), 6.0206 * n
+LOAD_VARS = 0x41D5E4 + 8                     # lab VARS: +8 sample period, +0xC busy (cycles), the box's own load meter
+PATCHBAY = 0x43f780
+PATCH_GET = 0x30a92c
+BLOCKS = ('hpf', 'low', 'peak', 'high', 'tube', 'comp', 'gate')
 
 
 def dt1(addr, data):
@@ -35,7 +50,8 @@ def dt1(addr, data):
 class Link(QObject):
     status = Signal(str, bool)                 # text, online
     meters = Signal(list, float)               # 8 x dBFS, GR dB of the watched channel
-    preamp = Signal(int, int, int)             # ch, gain raw (half dB), 48V
+    load = Signal(int, int)                    # busy cycles, period cycles
+    preamp = Signal(int, int, int, int)        # ch, gain raw (half dB), 48V, Hi-Z (-1 = this input has none)
     flags = Signal(list)                       # per channel: set of block names that are on in the unit
 
     def __init__(self, unit=0):
@@ -46,8 +62,15 @@ class Link(QObject):
         self.lock = threading.Lock()
         self.watch = 0
         self.stop = False
+        self.paused = False                    # the engine sees fewer boxes than links: this one waits
+        self.mode, self.fast_on, self.fast = 'fat', False, None      # FAT/SLIM: SLIM needs the fast-memory path running
+        self.busy = False                      # a long job (bench) holds the link: not a dead box
+        self.last_ok = time.time()             # the last time the box answered
         self.lab = self.strip = None
         self.fs = 48000
+        self.fx_ok = None                      # None = not known yet, False = this firmware has no FX/gate
+        self.makeup = [dict(high=0.0, peak=0.0) for _ in range(8)]   # dB a boost was sent short by (fit_eq), per input
+        self.last_c = [None] * 8
         self.th = threading.Thread(target=self.run, daemon=True)
 
     def start(self):
@@ -62,17 +85,57 @@ class Link(QObject):
         if on:
             self.send(('blk', ch, name), lambda: self._apply(ch, name, c))
         else:
-            self.send(('blk', ch, name), lambda: self.strip.off(ch, [name]))
+            def off():
+                if name == 'gate':
+                    self.strip.gate_off(ch)
+                    return
+                self.strip.off(ch, [name])
+                if name in ('high', 'peak'):
+                    self._makeup(ch, name, 0.0)
+            self.send(('blk', ch, name), off)
 
-    def set_amp(self, ch, voice):
+    def _makeup(self, ch, name, db):
+        """level a boost couldn't carry in its own filter, put back after the comp (strip output gain). The comp's
+        threshold moves down by the same dB, so it works on the same signal as before (see fit_eq)."""
+        if self.makeup[ch][name] == db:
+            return
+        self.makeup[ch][name] = db
+        total = sum(self.makeup[ch].values())
+        import octa_lab
+        s = self.strip
+        if total > 0:
+            s.gain(ch, 0.0, total)
+        else:
+            s.set_flags(ch, s.flags(ch) & ~octa_lab.F['gain'])
+        c = self.last_c[ch]
+        if c is not None and s.flags(ch) & octa_lab.F['comp']:
+            self._apply(ch, 'comp', c)
+
+    def set_amp(self, ch, voice, gain_db=None, master_db=None, pres_db=None, hard=None, tweaks=None):
         def go():
             if not self.strip.amp0:                          # older firmware: say so, don't drop the link
                 self.status.emit('this firmware has no amp yet', True)
             elif voice == 'off':
                 self.strip.amp_off(ch)
             else:
-                self.strip.amp(ch, voice)
+                self.strip.amp(ch, voice, gain_db, master_db, pres_db, hard, tweaks)
+                if hard and not getattr(self.strip, 'hard_ok', False):
+                    self.status.emit('HARD clip needs the strip9 firmware: soft curve for now', False)
         self.send(('amp', ch), go)
+
+    def set_fx(self, ch, p):
+        """echo + reverb on input ch (p = amp_presets fx dict), or off (p None)"""
+        def go():
+            try:
+                if p is None:
+                    self.strip.fx_off()
+                else:
+                    self.strip.fx(ch, **p)
+                    self.fx_ok = True
+            except SystemExit as e:                          # older firmware: say so, keep the link
+                self.fx_ok = False
+                self.status.emit(str(e), False)
+        self.send(('fx',), go)
 
     def set_gain(self, ch, raw):
         raw = max(0, min(100, int(raw)))
@@ -81,26 +144,56 @@ class Link(QObject):
     def set_48v(self, ch, on):
         self.send(('48v', ch), lambda: self._dt1([0x00, 0x05, ch, 0x00], [1 if on else 0]))
 
+    def set_hiz(self, ch, on):
+        self.send(('hiz', ch), lambda: self._dt1([0x00, 0x05, ch, 0x03], [1 if on else 0]))
+
+    def ensure_patchbay(self, pair, wire, told=None):
+        """output pair -> source, written only when the box differs (the getter returns wire + 1)"""
+        def go():
+            if self.lab.call(PATCH_GET, PATCHBAY, pair, 0)[0] != wire + 1:
+                self._dt1([0x00, 0x03, 0x00, pair], [wire])
+                if told:
+                    told(pair, wire)
+        self.send(('patch', pair), go)
+
     # ---- worker ----
     def _dt1(self, addr, data):
         import mido
         self.lab.out.send(mido.Message('sysex', data=dt1(addr, data)))
 
     def _apply(self, ch, name, c):
-        from octa_lab import rbj
+        from octa_lab import COMP_DIV, rbj
+        self.last_c[ch] = c
         s, fs = self.strip, self.fs
+        slim = self.mode == 'slim' and self.fast_on
         if name == 'hpf':
             s.eq(ch, 'hpf', rbj('hpf', fs, c['hpf_f']))
         elif name == 'low':
             s.eq(ch, 'low', rbj('low', fs, c['low_f'], c['low_g']))
         elif name == 'peak':
-            s.eq(ch, 'peak', rbj('peak', fs, c['peak_f'], c['peak_g'], c['peak_q']))
+            k, mk = fit_eq('peak', rbj('peak', fs, c['peak_f'], c['peak_g'], c['peak_q']))
+            s.eq(ch, 'peak', k, slim=slim)
+            self._makeup(ch, 'peak', mk)
         elif name == 'high':
-            s.eq(ch, 'high', rbj('high', fs, c['high_f'], c['high_g']))
+            if c.get('high_kind'):                           # the amp's TREBLE: its MASTER carries the level
+                s.eq(ch, 'high', rbj(c['high_kind'], fs, c['high_f'], c['high_g']), slim=slim)
+                self._makeup(ch, 'high', 0.0)
+            else:
+                g = c['high_g']
+                k = rbj('low', fs, c['high_f'], -g) if g > 0 else rbj('high', fs, c['high_f'], g)
+                s.eq(ch, 'high', k, slim=slim)
+                self._makeup(ch, 'high', max(0.0, g))
         elif name == 'tube':
             s.tube(ch, c['drive'], min(0.6, c['bias']), c['tube_out'])
+        elif name == 'gate':
+            try:
+                s.gate(ch, c.get('gate_thr', -45.0))
+            except SystemExit as e:                          # older firmware: say so, keep the link
+                self.fx_ok = False
+                self.status.emit(str(e), False)
         elif name == 'comp':
-            s.comp(ch, c['thresh'], c['ratio'], c['attack'], c['release'], 6.0, c['makeup'])
+            thr = max(-60.0, c['thresh'] - sum(self.makeup[ch].values()))
+            s.comp(ch, thr, c['ratio'], c['attack'], c['release'], 6.0, c['makeup'], div=COMP_DIV if slim else 1)
 
     def connect(self):
         import octa_lab
@@ -127,14 +220,23 @@ class Link(QObject):
         if self.strip.flags(ch) & 32:
             gr = self.strip.gr(ch, reset=False)[0]
         self.meters.emit(db, gr)
+        if n % 8 == 3:                                       # DSP load, ~3 Hz
+            per, busy = struct.unpack('<2I', self.lab.peek(LOAD_VARS, 8, 4))
+            if per and busy:
+                self.load.emit(busy, per)
         if n % 6 == 0:                                       # preamp state of the shown channel, ~3 Hz
             g = self.lab.call(R_GET, PREAMP, 0, ch)[0]
             p = self.lab.call(R_GET, PREAMP, 11, ch)[0]
-            self.preamp.emit(ch, g, p)
+            z = self.lab.call(R_GET, PREAMP, 12, ch)[0] if ch < 2 else -1
+            self.preamp.emit(ch, g, p, z)
 
     def run(self):
         n = 0
         while not self.stop:
+            if self.paused:
+                self.last_ok = time.time()
+                time.sleep(0.25)
+                continue
             try:
                 if self.lab is None:
                     self.status.emit('CONNECTING...', False)
@@ -144,6 +246,7 @@ class Link(QObject):
                 for fn in work:
                     fn()
                 self.poll(n)
+                self.last_ok = time.time()
                 n += 1
                 time.sleep(0.04)
             except BaseException as e:                       # SystemExit from octa_lab included

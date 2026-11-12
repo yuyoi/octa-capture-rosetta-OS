@@ -133,6 +133,16 @@ class Lab:
         ver, vars_, area = struct.unpack('>HII', r[:10])
         return ver, vars_, area
 
+    def gate_addr(self):
+        """the noise gate block (lab >= 1.8), or 0 on older firmware"""
+        r = self.xfer(CMD['PING'])
+        return struct.unpack('>I', r[22:26])[0] if len(r) >= 26 else 0
+
+    def fx_addr(self):
+        """the echo + reverb block (lab >= 1.8), or 0 on older firmware"""
+        r = self.xfer(CMD['PING'])
+        return struct.unpack('>I', r[18:22])[0] if len(r) >= 22 else 0
+
     def strip_addr(self):
         r = self.xfer(CMD['PING'])
         if len(r) < 14:
@@ -235,7 +245,11 @@ def memcheck(lab):
 
 # ---- channel strip v2 (patches/strip.c, docs/STRIP.md) ----
 CCLK = 372.4e6                  # measured on hardware (meter period x 44.1 kHz)
-F = dict(hpf=1, low=2, peak=4, high=8, tube=16, comp=32, gain=64, amp=128)
+F = dict(hpf=1, low=2, peak=4, high=8, tube=16, comp=32, gain=64, amp=128, slim_peak=256, slim_high=512, comp_div=1024,
+         amp_hard=2048, fx=4096, gate=8192)
+FX_MAGIC, FX_DMAX = 0x31584652, 60000   # strip.h struct fx
+GATE_MAGIC = 0x31544147                 # strip.h struct gate: magic, hold, att, rel, then 8 x (open close env g cnt is_open)
+COMP_DIV = 8                                                     # SLIM: comp detector every 8 samples (patches/strip.h)
 NBQ = 5                                                          # amp biquads take mailbox slots NBQ..NBQ+5
 AMP_FIELDS = dict(ch=0, d1=4, b1=8, c1=12, d2=16, b2=20, c2=24, out=28)
 # gain = total of both stages (dB), b1/b2 = bias, tight/pre = low-cut between the stages / top cut before them (Hz),
@@ -246,8 +260,24 @@ AMP_VOICES = dict(
     lead=dict(gain=40.0, b1=0.30, b2=0.15, tight=170.0, pre=6500.0, res=105.0, pres=4.0, master=-4.0),
     # the user's favourite on the Les Paul (2026-11-08): the strip's tube at 24 dB drive, bias 0.3, as a single stage
     cranked=dict(gain=24.0, split=1.0, b1=0.30, b2=0.0, tight=80.0, pre=12000.0, res=95.0, pres=2.0, master=-3.0),
+    # boosted big-box fuzz for sludge (user, 2026-11-11): two symmetric stages flat out, hard, bass kept, fizz rolled off
+    # before the clip; the mid scoop is the tone stack's MIDDLE (app: 1 kHz, starts scooped)
+    fuzz=dict(gain=46.0, split=0.5, b1=0.0, b2=0.0, tight=55.0, pre=4000.0, res=75.0, pres=1.0, master=-8.0, hard=True),
 )
 SLOT = dict(hpf=0, low=1, peak=2, high=3, dc=4)
+AMP_TWEAKS = ('tight', 'pre', 'res', 'b1', 'b2', 'split', 'lp1', 'lp2', 'hard')
+STAGE_MAX = 23.9                        # dB one gain stage can take (Q27 drive < 16)
+
+
+def stage_split(gain, split):
+    """the amp gain over the two stages as the voice wants it, but neither past STAGE_MAX: the rest goes to the other
+    stage, so the total is always what was asked (up to 46 dB). Before 2026-11-11 GAIN > ~40 dB on a 0.4 split raised
+    here and dropped the link."""
+    g1 = min(gain * split, STAGE_MAX)
+    g2 = gain - g1
+    if g2 > STAGE_MAX:
+        g1, g2 = gain - STAGE_MAX, STAGE_MAX
+    return g1, g2
 FIELDS = ['flags', 'gin', 'gout', 'bq', 'drive', 'bias', 'c0', 'tout', 'thr', 'khalf', 'inv2k', 'slope',
           'atk', 'rel', 'makeup', 'g', 'grmax']
 H_CLIPS, H_SEQ, H_DONE, H_TGT, H_C = 96, 100, 104, 108, 112     # fixed header (strip.c struct strip)
@@ -294,6 +324,28 @@ def q30(coefs):
     return out
 
 
+def slim_q30(coefs, fs, limit_db=0.05):
+    """SLIM mode: b0-b2 with their low 16 bits zero, or None if that would move the response by more than limit_db anywhere.
+    Filters low in frequency need the precision, because the zeros sit close to z = 1; those stay full."""
+    import cmath
+    full = q30(coefs)
+    slim = [((v + 0x8000) >> 16) << 16 for v in full[:3]] + full[3:]
+    if not all(-(1 << 31) <= v < (1 << 31) for v in slim):
+        return None
+
+    def mag(c, z):
+        n = (c[0] + c[1] * z + c[2] * z * z) / Q30
+        d = 1 - (c[3] * z + c[4] * z * z) / Q30
+        return abs(n / d)
+    for i in range(200):
+        f = 20 * ((fs * 0.45) / 20) ** (i / 199)
+        z = cmath.exp(-2j * math.pi * f / fs)
+        a, b = mag(full, z), mag(slim, z)
+        if a <= 0 or b <= 0 or abs(20 * math.log10(b / a)) > limit_db:
+            return None
+    return slim
+
+
 def db2q27(db, lim=15.99):
     g = 10 ** (db / 20)
     if g > lim:
@@ -314,11 +366,12 @@ class Strip:
         self.lab, self._fs = lab, fs
         self.base = lab.strip_addr()
         magic, ver, nch, csize = struct.unpack('<4I', lab.peek(self.base, 16, 4))
-        if magic != 0x53545250 or ver not in (2, 3):
+        if magic != 0x53545250 or ver not in (2, 3, 4):
             raise SystemExit(f'no strip v2/v3 at {self.base:#x} (magic {magic:#x}, ver {ver}): needs lab >= 1.4')
         off = struct.unpack('<20I', lab.peek(self.base + 16, 80, 4))
         self.nch, self.csize, self.ch0, self.bqsize = nch, csize, off[0], off[1]
         self.amp0 = off[19] if ver >= 3 else 0                  # 0 = this firmware has no amp
+        self.hard_ok = ver >= 4                                 # F_AMP_HARD understood (older firmware ignores the bit)
         self.f = dict(zip(FIELDS, off[2:2 + len(FIELDS)]))
 
     @property
@@ -355,10 +408,14 @@ class Strip:
             if time.time() - t0 > 1:
                 raise SystemExit('the strip did not take the coefficients: is audio running at 44.1/48/88.2 kHz?')
 
-    def eq(self, ch, kind, c):
+    def eq(self, ch, kind, c, slim=False):
+        """slim=True: use the cheap filter for peak/high when slim_q30 says nobody could hear the difference"""
         on = self.flags(ch)
-        self.coefs(ch, SLOT[kind], q30(c), reset=not on & F[kind])
-        self.set_flags(ch, on | F[kind])
+        bit = F.get('slim_' + kind, 0)
+        cheap = slim_q30(c, self.fs) if slim and bit else None
+        self.set_flags(ch, on & ~bit)
+        self.coefs(ch, SLOT[kind], cheap or q30(c), reset=not on & F[kind])
+        self.set_flags(ch, (on & ~bit) | F[kind] | (bit if cheap else 0))
 
     def gain(self, ch, din, dout):
         self.wr(ch, 'gin', db2q27(din))
@@ -377,7 +434,9 @@ class Strip:
             self.coefs(ch, SLOT['dc'], q30(rbj('dc', self.fs, 10)), reset=True)
         self.set_flags(ch, on | F['tube'])
 
-    def comp(self, ch, thr_db, ratio, atk_ms, rel_ms, knee_db, makeup_db):
+    def comp(self, ch, thr_db, ratio, atk_ms, rel_ms, knee_db, makeup_db, div=1):
+        """div=COMP_DIV: SLIM comp, gain worked out every 8 samples, so the time constants are per 8 samples"""
+        atk_ms, rel_ms = atk_ms / div, rel_ms / div
         k = knee_db / LOG2DB
         slope = 1 - 1 / ratio if ratio < 1000 else 1.0
         vals = dict(thr=round(thr_db / LOG2DB * Q24), khalf=round(k / 2 * Q24),
@@ -387,38 +446,86 @@ class Strip:
         self.wr(ch, 'thr', *[vals[n] for n in ('thr', 'khalf', 'inv2k', 'slope', 'atk', 'rel', 'makeup')])
         if not on & F['comp']:
             self.wr(ch, 'g', 0, 0)
-        self.set_flags(ch, on | F['comp'])
+        self.set_flags(ch, (on & ~F['comp_div']) | F['comp'] | (F['comp_div'] if div > 1 else 0))
 
     def _amp_wr(self, name, *vals):
         self.lab.poke(self.base + self.amp0 + AMP_FIELDS[name], struct.pack(f'<{len(vals)}i', *vals), 4)
 
-    def amp(self, ch, voice='crunch', gain_db=None, master_db=None):
-        """Guitar amp on one input (one per box): replaces tube and comp there; low/peak/high become its tone stack."""
+    def amp(self, ch, voice='crunch', gain_db=None, master_db=None, pres_db=None, hard=None, tweaks=None):
+        """Guitar amp on one input (one per box): replaces tube and comp there; low/peak/high become its tone stack.
+        tweaks: a tone preset's own amp insides over the voice's (tight, pre, res, b1, b2, split, lp1, lp2, hard)."""
         if not self.amp0:
             raise SystemExit('this firmware has no amp block (needs strip v3)')
-        v = AMP_VOICES[voice]
+        v = dict(AMP_VOICES[voice])
+        v.update({k: x for k, x in (tweaks or {}).items() if k in AMP_TWEAKS})
         gain = v['gain'] if gain_db is None else gain_db
         if not 0 <= gain <= 46:
             raise SystemExit('amp gain 0..46 dB')
         master = v['master'] if master_db is None else master_db
         fs = self.fs
         bq = [rbj('lpf', fs, v['pre'], q=0.7071), rbj('hpf', fs, v['tight'], q=0.7071),
-              rbj('hpf', fs, v['res'], q=1.3), rbj('peak', fs, 2600.0, v['pres'], 1.1),
-              rbj('lpf', fs, 5200.0, q=0.8), rbj('lpf', fs, 7000.0, q=0.6)]
+              rbj('hpf', fs, v['res'], q=1.3), rbj('peak', fs, 2600.0, v['pres'] if pres_db is None else pres_db, 1.1),
+              rbj('lpf', fs, v.get('lp1', 5200.0), q=0.8), rbj('lpf', fs, v.get('lp2', 7000.0), q=0.6)]
         on = self.flags(ch)
         fresh = not on & F['amp']
         for i, c in enumerate(bq):
             self.coefs(ch, NBQ + i, q30(c), reset=fresh)
-        split = v.get('split', 0.4)
-        g1, g2 = gain * split, gain * (1 - split)
+        g1, g2 = stage_split(gain, v.get('split', 0.4))
         curve = lambda b: b - b ** 3 / 3
         self._amp_wr('d1', db2q27(g1), round(v['b1'] * Q27), round(curve(v['b1']) * Q27),
                      db2q27(g2), round(v['b2'] * Q27), round(curve(v['b2']) * Q27), db2q27(master))
         self._amp_wr('ch', ch)
-        self.set_flags(ch, (on | F['amp']) & ~F['tube'] & ~F['comp'])
+        hard = v.get('hard', False) if hard is None else hard
+        self.set_flags(ch, ((on | F['amp']) & ~F['tube'] & ~F['comp'] & ~F['amp_hard']) | (F['amp_hard'] if hard else 0))
+
+    def fx(self, ch, echo_ms=0.0, echo_fb=0.0, echo_mix=0.0, echo_tone=5000.0, rev_mix=0.0, rev_size=0.5, rev_damp=0.5):
+        """echo + reverb on one input (one per box), after its strip/amp. Mixes 0-1, feedback 0-0.9, size/damp 0-1.
+        The dry sound is untouched and on time; only the repeats and the tail come later."""
+        base = getattr(self, '_fx', None)
+        if base is None:
+            base = self._fx = self.lab.fx_addr()
+        if not base or struct.unpack('<I', self.lab.peek(base, 4, 4))[0] != FX_MAGIC:
+            raise SystemExit('this firmware has no echo/reverb (needs strip10)')
+        fs = self.fs
+        q = lambda v: round(max(-15.9, min(15.9, v)) * Q27)
+        dlen = min(FX_DMAX, max(1, round(echo_ms * fs / 1000))) if echo_mix > 0 and echo_ms > 0 else 0
+        ddamp = 1 - math.exp(-2 * math.pi * min(echo_tone, fs * 0.45) / fs)
+        k = fs / 44100
+        words = [dlen, q(min(0.9, echo_fb)), q(echo_mix), q(ddamp), q(2.0 * rev_mix), q(0.7 + 0.28 * rev_size),
+                 q(1 - 0.4 * rev_damp)] + [round(n * k) for n in (1116, 1188, 1277, 1356)] + [round(n * k) for n in (556, 441)]
+        self.lab.poke(base + 4, struct.pack('<7i6I', *words), 4)
+        for c in range(self.nch):
+            v = self.flags(c)
+            want = (v | F['fx']) if c == ch and (dlen or rev_mix > 0) else (v & ~F['fx'])
+            if want != v:
+                self.set_flags(c, want)
+
+    def gate(self, ch, thr_db=-45.0, hyst_db=6.0, hold_ms=60.0, att_ms=0.3, rel_ms=80.0):
+        """noise gate on one input: listens to the input as it comes in, opens on the same sample (no lookahead, no
+        delay), shuts after hold + release below thr - hyst. Timing is shared by all inputs."""
+        base = getattr(self, '_gate', None)
+        if base is None:
+            base = self._gate = self.lab.gate_addr()
+        if not base or struct.unpack('<I', self.lab.peek(base, 4, 4))[0] != GATE_MAGIC:
+            raise SystemExit('this firmware has no noise gate (needs strip10)')
+        fs = self.fs
+        lin = lambda db: round(10 ** (db / 20) * Q27)
+        step = lambda ms: round((1 - math.exp(-1000.0 / (max(0.05, ms) * fs))) * Q30)
+        self.lab.poke(base + 4, struct.pack('<3i', round(hold_ms * fs / 1000), step(att_ms), step(rel_ms)), 4)
+        self.lab.poke(base + 16 + 24 * ch, struct.pack('<2i', lin(thr_db), lin(thr_db - hyst_db)), 4)
+        self.set_flags(ch, self.flags(ch) | F['gate'])
+
+    def gate_off(self, ch):
+        self.set_flags(ch, self.flags(ch) & ~F['gate'])
+
+    def fx_off(self):
+        for c in range(self.nch):
+            v = self.flags(c)
+            if v & F['fx']:
+                self.set_flags(c, v & ~F['fx'])
 
     def amp_off(self, ch):
-        self.set_flags(ch, self.flags(ch) & ~F['amp'])
+        self.set_flags(ch, self.flags(ch) & ~F['amp'] & ~F['amp_hard'])
         self._amp_wr('ch', -1)
 
     def off(self, ch, names):
@@ -426,6 +533,10 @@ class Strip:
             v = self.flags(c)
             for n in names:
                 v &= ~F[n]
+                if n in ('peak', 'high'):
+                    v &= ~F['slim_' + n]
+                elif n == 'comp':
+                    v &= ~F['comp_div']
             self.set_flags(c, v)
 
     def gr(self, ch, reset=True):

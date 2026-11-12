@@ -43,6 +43,7 @@ arm_stub:                               /* from 0x31bd7a, R0 = 2 must survive */
         SP += -12;
         CALL _strip_init;               /* channel strip block in free L1 data: all off, then magic */
         CALL _page_install;             /* screen 18 -> STRIP page, SENS -> GAIN (page.c) */
+        CALL _fast_boot;                /* fast audio path into L1 + Roland comp skip (fast_boot.c); SDRAM path if it fails */
         SP += 12;
         R0 = [SP++];
         RETS = [SP++];
@@ -69,6 +70,7 @@ ui_hook:
         [--SP] = (R7:6, P5:5);
         SP += -16;
         CALL f_overlay;
+        CALL _scene_tick;               /* scene.c: the PC's bank request, in the UI task (flash writes never in MIDI) */
         P5.L = VARS & 0xffff;  P5.H = VARS >> 16;
         R0 = [P5];
         R1.L = MAGIC;  R1.H = MAGIC;
@@ -80,7 +82,8 @@ ui_hook:
         R1.L = STOCK48 & 0xffff;  R1.H = STOCK48 >> 16;
         CC = R0 == R1;
         IF !CC JUMP 2f;
-        R1.L = wrap48;  R1.H = wrap48;
+        P0.L = _wrap_ptr;  P0.H = _wrap_ptr;   /* wrap48, or wrap48_fast once fast_boot has verified it */
+        R1 = [P0];
         [P1] = R1;
 2:      R6 = [P5 + 0xc];
         R7 = [P5 + 8];
@@ -153,6 +156,19 @@ midi_hook:
         JUMP.L lab_entry;               /* SP, RETS and every other register still the dispatcher's */
 
 /* ===================================================================== .lab (appended code) */
+        .section .data
+        .global _wrap_ptr
+        .balign 4
+_wrap_ptr:
+        .long wrap48
+
+        .section .rodata
+        .global _fast_img, _fast_img_end
+        .balign 4
+_fast_img:                              /* the fast audio path, linked for L1 0xffa04900 (build_fast.py) */
+        .incbin "fast_blob.inc"
+_fast_img_end:
+
         .section .lab, "ax"
         .global lab_entry, wrap48
 /* Reached from midi_hook only when ARMED (task 9, stack 0x400 with ~0x290 usable here: keep frames small).
@@ -371,3 +387,5 @@ _lab_jb:  .long 0, 0
         .byte 0xb2, 0x2f                /* JUMP.S 0x30ddfa */
         .section .h_midi, "ax"          /* 0x36949a: was R1 = [SP + 0x3c]; R0 = 0xf (X); */
         CALL midi_hook;
+        .section .h_save, "ax"          /* 0x31d1cc: was CALL 0x3667ec (close) in Roland's settings save 0x31d160 */
+        CALL _scene_close_hook;

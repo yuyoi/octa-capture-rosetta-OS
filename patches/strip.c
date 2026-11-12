@@ -22,9 +22,28 @@ typedef long long s64;
 #ifdef HOST_TEST
 struct strip strip_host_mem;
 #define S (&strip_host_mem)
+struct fx strip_host_fx;
+#define FX (&strip_host_fx)
+struct gate strip_host_gate;
+#define GT (&strip_host_gate)
 #else
 #define S ((struct strip *)STRIP_ADDR)
+#define FX ((struct fx *)FX_ADDR)
+#define GT ((struct gate *)GATE_ADDR)
 #endif
+
+#if defined(FAST_BLOB) || defined(HOST_TEST)
+#define HAVE_SLIM
+#ifdef HOST_TEST
+struct slimc strip_host_slim[NCH];
+#define SL strip_host_slim
+#else
+#define SL ((struct slimc *)SLIM_ADDR)
+#endif
+#endif
+
+#define LIKELY(x) __builtin_expect(!!(x), 1)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 /* ---- fixed-point helpers: floor(a * b / 2^SH), exact, saturating to 32 bits ----
  * a*b = aH bH 2^32 + (aH bL + bH aL) 2^16 + aL bL, with aH/bH signed and aL/bL unsigned halves. */
@@ -61,6 +80,7 @@ static inline int sadd(int a, int b) { return __builtin_bfin_add_fr1x32(a, b); }
 static inline int norm32(int a) { return __builtin_bfin_norm_fr1x32(a); }  /* redundant sign bits */
 #endif
 
+#ifndef FAST_BLOB
 int strip_mul(int a, int b)             /* on-unit test hooks (octa_lab.py strip selftest) */
 {
     return mulsh30(a, b);
@@ -70,6 +90,7 @@ int strip_mul27(int a, int b)
 {
     return mulsh27(a, b);
 }
+#endif
 
 /* ---- biquad: patches/lab1.S _bq_run (hand-written MACs) on the unit, the exact same math in C on the host.
  * P = sum of the 5 products, split by 16-bit halves: P = 2^32 sum(HH) + 2^16 sum(mid) + sum(LL).
@@ -103,10 +124,31 @@ static int bq_run(struct bq *s, int x)
 extern int bq_run(struct bq *s, int x);
 #endif
 
+#ifdef FAST_BLOB
+extern int bq_run3(struct bq *s, int x);        /* fast.S: same result for a stage with c[2] = c[4] = 0, 8 multiplies fewer */
+#else
+#define bq_run3 bq_run
+#endif
+
+#ifdef HOST_TEST
+#define bq_slim bq_run                          /* identical when the low halves of b0-b2 are zero, which is what SLIM sends */
+#elif defined(FAST_BLOB)
+extern int bq_slim(struct bq *s, int x);        /* fast.S: 14 multiplies instead of 20 */
+#endif
+
+#ifdef FAST_BLOB
+extern int bq_fast(struct bq *s, int x);        /* fast.S: bq_run's sums with the loads overlapped, same output.
+                                                   Inlining it was tried: bit-exact, but ~20 cycles slower in the ISR. */
+static inline int biquad(struct bq *s, int x)
+{
+    return bq_fast(s, x);
+}
+#else
 static inline int biquad(struct bq *s, int x)
 {
     return bq_run(s, x);
 }
+#endif
 
 /* ---- tube: asymmetric cubic soft clip c(w) = w - w^3/3 on [-1, 1] (flat +-2/3 outside, smooth at the
  * corner). The bias shifts the operating point: c(w + b) - c(b) has an x^2 term = even harmonics.
@@ -123,14 +165,22 @@ static inline int tube(struct chan *c, int x)
     int w3 = mulsh27(mulsh27(w, w), w);
     int y = w - mulsh27(w3, THIRD) - c->c0;
     y = mulsh27(y, c->tout);
-    return biquad(&c->bq[4], y);        /* DC blocker (1st-order HPF ~10 Hz, set by the PC) */
+    return bq_run3(&c->bq[4], y);       /* DC blocker (1st-order HPF ~10 Hz, set by the PC) */
 }
 
 /* ---- amp: two gain stages of the tube curve (no output gain or DC blocker of their own), then the strip's tone
- * stack, then the speaker biquads. ---- */
-static inline int amp_stage(int x, int drive, int bias, int c0)
+ * stack, then the speaker biquads. F_AMP_HARD: the stages clip hard instead, at the curve's own ceiling (+-2/3), so the
+ * level matches; the bias still shifts the clip point (uneven clipping = even harmonics), minus itself so no DC step.
+ * Hard clipping makes harmonics past Fs/2 that fold back (fizz) at mid gain; at full gain the two sound alike. ---- */
+#define TWO3 89478485                   /* round(2^27 * 2/3) */
+
+static inline int amp_stage(int x, int drive, int bias, int c0, u32 hard)
 {
     int w = sadd(mulsh27(x, drive), bias);
+    if (hard) {
+        w = w > TWO3 ? TWO3 : w < -TWO3 ? -TWO3 : w;
+        return w - bias;
+    }
     if (w > ONE)
         w = ONE;
     else if (w < -ONE)
@@ -139,12 +189,12 @@ static inline int amp_stage(int x, int drive, int bias, int c0)
     return w - mulsh27(w3, THIRD) - c0;
 }
 
-static inline int amp_gain(struct amp *a, int x)
+static inline int amp_gain(struct amp *a, int x, u32 hard)
 {
     x = biquad(&a->bq[0], x);
-    x = amp_stage(x, a->d1, a->b1, a->c1);
+    x = amp_stage(x, a->d1, a->b1, a->c1, hard);
     x = biquad(&a->bq[1], x);
-    return amp_stage(x, a->d2, a->b2, a->c2);
+    return amp_stage(x, a->d2, a->b2, a->c2, hard);
 }
 
 static inline int amp_speaker(struct amp *a, int x)
@@ -154,6 +204,93 @@ static inline int amp_speaker(struct amp *a, int x)
     x = biquad(&a->bq[4], x);
     x = biquad(&a->bq[5], x);
     return mulsh27(x, a->out);
+}
+
+/* ---- echo + reverb (strip.h struct fx) ---- */
+static inline int sat16(int v)
+{
+    return v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+}
+#define TO16(x) ((short)sat16((x) >> 12))
+#define FROM16(v) ((int)(v) * 4096)
+
+static int fx_run(int x)
+{
+    struct fx *f = FX;
+    if (f->magic != FX_MAGIC)
+        return x;
+    int wet = 0;
+    u32 n = f->dlen;
+    if (n) {                            /* echo: read n back, darken, feed back, write */
+        if (n > FX_DMAX)
+            n = FX_DMAX;
+        u32 p = f->dpos;
+        if (p >= FX_DMAX)
+            p = 0;
+        u32 r = p >= n ? p - n : p + FX_DMAX - n;
+        int d = FROM16(f->dbuf[r]);
+        f->dlp = sadd(f->dlp, mulsh27(f->ddamp, d - f->dlp));
+        f->dbuf[p] = TO16(sadd(x, mulsh27(f->dlp, f->dfb)));
+        f->dpos = p + 1 >= FX_DMAX ? 0 : p + 1;
+        wet = mulsh27(f->dlp, f->dmix);
+    }
+    if (f->rmix) {                      /* reverb on dry + echo, 1/8 in so the combs never clip */
+        int in = sadd(x, wet) >> 3, sum = 0;
+        for (int i = 0; i < FX_NC; i++) {
+            u32 L = f->clen[i], p = f->cpos[i];
+            if (L - 1 >= FX_CMAX)
+                L = FX_CMAX;
+            if (p >= L)
+                p = 0;
+            int c = FROM16(f->cbuf[i][p]);
+            f->clp[i] = sadd(f->clp[i], mulsh27(f->rdamp, c - f->clp[i]));
+            f->cbuf[i][p] = TO16(sadd(in, mulsh27(f->clp[i], f->rfb)));
+            f->cpos[i] = p + 1 >= L ? 0 : p + 1;
+            sum = sadd(sum, c);
+        }
+        for (int j = 0; j < FX_NA; j++) {
+            u32 L = f->alen[j], p = f->apos[j];
+            if (L - 1 >= FX_AMAX)
+                L = FX_AMAX;
+            if (p >= L)
+                p = 0;
+            int b = FROM16(f->abuf[j][p]);
+            f->abuf[j][p] = TO16(sadd(sum, b >> 1));
+            f->apos[j] = p + 1 >= L ? 0 : p + 1;
+            sum = b - sum;
+        }
+        wet = sadd(wet, mulsh27(sum, f->rmix));
+    }
+    return sadd(x, wet);
+}
+
+/* ---- noise gate (strip.h struct gate): detect on x0 (the input as it came in), turn x down ---- */
+static int gate_run(int ch, int x0, int x)
+{
+    struct gate *G = GT;
+    if (G->magic != GATE_MAGIC)
+        return x;
+    struct gate_ch *k = &G->ch[ch];
+    int a = x0 < 0 ? (x0 == (int)0x80000000 ? 0x7fffffff : -x0) : x0;
+    k->env = a > k->env ? a : k->env - (k->env >> 9);          /* peak follower, ~12 ms fall */
+    if (k->env > k->open) {
+        k->is_open = 1;
+        k->cnt = (u32)G->hold;
+    } else if (k->is_open && k->env < k->close) {
+        if (k->cnt)
+            k->cnt--;
+        else
+            k->is_open = 0;
+    }
+    if (k->is_open) {                   /* +1 so it lands exactly on 1.0: an open gate is bit-transparent */
+        k->g = sadd(k->g, mulsh30(ONE - k->g, G->att) + 1);
+        if (k->g > ONE)
+            k->g = ONE;
+    } else
+        k->g -= mulsh30(k->g, G->rel);
+    if (k->g < 0)
+        k->g = 0;
+    return mulsh27(x, k->g);
 }
 
 /* ---- comp: feed-forward, log domain, soft knee, attack/release on the gain reduction ---- */
@@ -186,9 +323,13 @@ static inline int exp2q27(int gl)       /* 2^(gl / 2^24) as a Q27 gain, saturati
     return sh > 30 ? 0 : q >> sh;
 }
 
-static inline int comp(struct chan *c, int x)
+static inline int abs32(int x)
 {
-    int a = x < 0 ? (x == (int)0x80000000u ? 0x7fffffff : -x) : x;
+    return x < 0 ? (x == (int)0x80000000u ? 0x7fffffff : -x) : x;
+}
+
+static inline int comp_update(struct chan *c, int a)   /* level -> new gain reduction */
+{
     if (a < 1)
         a = 1;
     int over = log2q24(a) - (27 << 24) - c->thr;
@@ -206,8 +347,28 @@ static inline int comp(struct chan *c, int x)
     c->g = g;
     if (g > c->grmax)
         c->grmax = g;
-    return mulsh27(x, exp2q27(c->makeup - g));
+    return g;
 }
+
+static inline int comp(struct chan *c, int x)
+{
+    return mulsh27(x, exp2q27(c->makeup - comp_update(c, abs32(x))));
+}
+
+#ifdef HAVE_SLIM
+static inline int comp_slim(struct chan *c, struct slimc *l, int x)
+{
+    int a = abs32(x);
+    if (a > l->pk)
+        l->pk = a;
+    if (--l->n < 0) {
+        l->n = COMP_DIV - 1;
+        l->lin = exp2q27(c->makeup - comp_update(c, l->pk));
+        l->pk = 0;
+    }
+    return mulsh27(x, l->lin);
+}
+#endif
 
 /* ---- per sample ---- */
 void strip_pre(int *in)
@@ -215,7 +376,7 @@ void strip_pre(int *in)
     struct strip *s = S;
     if (s->magic != MAGIC)
         return;
-    if (s->mb_seq != s->mb_done) {
+    if (UNLIKELY(s->mb_seq != s->mb_done)) {
         u32 t = s->mb_target, k = t & 15;
         if (k < NBQ + NAMP) {
             struct bq *b = k < NBQ ? &s->ch[(t >> 4) & 7].bq[k] : &s->amp.bq[k - NBQ];
@@ -231,34 +392,68 @@ void strip_pre(int *in)
         }
         s->mb_done = s->mb_seq;
     }
-    struct chan *c = s->ch;
-    for (int ch = 0; ch < NCH; ch++, c++) {
+    /* Which inputs have anything on, without a branch per input: on this core every taken branch costs 6-10 cycles,
+     * and visiting 8 empty inputs one by one cost ~300 cycles a sample (measured). Then only the active ones are visited. */
+#define ON(n) ((u32)(s->ch[n].flags != 0) << (n))
+    u32 on = ON(0) | ON(1) | ON(2) | ON(3) | ON(4) | ON(5) | ON(6) | ON(7);
+#undef ON
+    while (on) {
+        const int ch = 30 - norm32((int)(on & -on));   /* lowest set bit */
+        on &= on - 1;
+        struct chan *c = &s->ch[ch];
         u32 f = c->flags;
-        if (!f)
-            continue;
         int x = in[ch];
-        if (f & F_GAIN)
-            x = mulsh27(x, c->gin);
-        if (f & F_HPF)
+        const int x0 = x;                               /* the gate listens to the input as it came in */
+#ifdef HAVE_SLIM
+#define PEAK_STAGE(x) ((f & F_SLIM_PEAK) ? bq_slim(&c->bq[2], x) : biquad(&c->bq[2], x))
+#define HIGH_STAGE(x) ((f & F_SLIM_HIGH) ? bq_slim(&c->bq[3], x) : biquad(&c->bq[3], x))
+#define COMP_STAGE(x) ((f & F_COMP_DIV) ? comp_slim(c, &SL[ch], x) : comp(c, x))
+#else
+#define PEAK_STAGE(x) biquad(&c->bq[2], x)
+#define HIGH_STAGE(x) biquad(&c->bq[3], x)
+#define COMP_STAGE(x) comp(c, x)
+#endif
+        if (LIKELY((f & ~(u32)(F_SLIM_PEAK | F_SLIM_HIGH | F_COMP_DIV)) ==
+                   (F_HPF | F_TUBE | F_LOW | F_PEAK | F_HIGH | F_COMP))) {
+            /* the whole strip and nothing else, the usual case: straight through without testing each block (every
+             * test is a branch, 6-10 cycles here) */
             x = biquad(&c->bq[0], x);
-        if (f & F_TUBE)
             x = tube(c, x);
-        const int amp_on = (f & F_AMP) && s->amp.ch == (u32)ch;
-        if (amp_on)
-            x = amp_gain(&s->amp, x);
-        if (f & F_LOW)
             x = biquad(&c->bq[1], x);
-        if (f & F_PEAK)
-            x = biquad(&c->bq[2], x);
-        if (f & F_HIGH)
-            x = biquad(&c->bq[3], x);
-        if (f & F_COMP)
-            x = comp(c, x);
-        if (amp_on)
-            x = amp_speaker(&s->amp, x);
-        if (f & F_GAIN)
-            x = mulsh27(x, c->gout);
-        if (x > OMAX - 1 || x < -OMAX) {
+            x = PEAK_STAGE(x);
+            x = HIGH_STAGE(x);
+            x = COMP_STAGE(x);
+        } else {
+            if (UNLIKELY(f & F_GAIN))
+                x = mulsh27(x, c->gin);
+            if (f & F_HPF)
+                x = biquad(&c->bq[0], x);
+            if (f & F_TUBE)
+                x = tube(c, x);
+            const int amp_on = UNLIKELY(f & F_AMP) && s->amp.ch == (u32)ch;
+            if (amp_on)
+                x = amp_gain(&s->amp, x, f & F_AMP_HARD);
+            if (f & F_LOW)
+                x = biquad(&c->bq[1], x);
+            if (f & F_PEAK)
+                x = PEAK_STAGE(x);
+            if (f & F_HIGH)
+                x = HIGH_STAGE(x);
+            if (f & F_COMP)
+                x = COMP_STAGE(x);
+            if (amp_on)
+                x = amp_speaker(&s->amp, x);
+            if (UNLIKELY(f & F_GAIN))
+                x = mulsh27(x, c->gout);
+        }
+#undef PEAK_STAGE
+#undef HIGH_STAGE
+#undef COMP_STAGE
+        if (UNLIKELY(f & F_GATE))
+            x = gate_run(ch, x0, x);
+        if (UNLIKELY(f & F_FX))
+            x = fx_run(x);
+        if (UNLIKELY(x > OMAX - 1 || x < -OMAX)) {
             s->clips++;
             x = x > 0 ? OMAX - 1 : -OMAX;
         }
@@ -266,9 +461,56 @@ void strip_pre(int *in)
     }
 }
 
+#ifndef FAST_BLOB
 u32 strip_addr(void)
 {
     return (u32)(unsigned long)S;
+}
+
+u32 fx_addr(void)
+{
+    return (u32)(unsigned long)FX;
+}
+
+u32 gate_addr(void)
+{
+    return (u32)(unsigned long)GT;
+}
+
+static void gate_init(void)             /* all open-ish defaults; nothing is gated until F_GATE is set */
+{
+    struct gate *G = GT;
+    G->magic = 0;
+    G->hold = 2646;                     /* 60 ms at 44.1 kHz */
+    G->att = 78000000;                  /* ~0.3 ms (Q30 0.073) */
+    G->rel = 410000;                    /* ~60 ms (Q30 0.00038) */
+    for (int c = 0; c < NCH; c++) {
+        struct gate_ch *k = &G->ch[c];
+        k->open = 754000;               /* -45 dBFS */
+        k->close = 378000;              /* -51 dBFS */
+        k->env = 0;
+        k->g = ONE;
+        k->cnt = (u32)G->hold;
+        k->is_open = 1;
+    }
+    G->magic = GATE_MAGIC;
+}
+
+/* everything silent and off; the classic small-room lengths at 44.1 kHz until the PC sets its own */
+static void fx_init(void)
+{
+    struct fx *f = FX;
+    f->magic = 0;
+    u32 *p = (u32 *)f;
+    for (u32 i = 0; i < sizeof(struct fx) / 4; i++)
+        p[i] = 0;
+    static const unsigned short cl[FX_NC] = { 1116, 1188, 1277, 1356 }, al[FX_NA] = { 556, 441 };
+    for (int i = 0; i < FX_NC; i++)
+        f->clen[i] = cl[i];
+    for (int j = 0; j < FX_NA; j++)
+        f->alen[j] = al[j];
+    f->ddamp = f->rdamp = ONE;
+    f->magic = FX_MAGIC;
 }
 
 #define OFFC(f) __builtin_offsetof(struct chan, f)
@@ -299,8 +541,19 @@ void strip_init(void)
         s->ch[ch].gin = s->ch[ch].gout = ONE;
         s->ch[ch].drive = s->ch[ch].tout = ONE;
     }
+#ifdef HOST_TEST
+    for (int ch = 0; ch < NCH; ch++) {
+        SL[ch].pk = 0;
+        SL[ch].n = ch;
+        SL[ch].lin = ONE;
+    }
+#endif
+    fx_init();
+    gate_init();
     s->magic = MAGIC;                   /* last: the ISR starts using the block now */
 }
+
+#endif /* !FAST_BLOB */
 
 /* sizeof(struct strip) must fit the free L1 tail 0xFF8034C0-0xFF803FFF (2880 B) */
 typedef char strip_fits_l1[(sizeof(struct strip) <= 0x4000 - 0x34C0) ? 1 : -1];

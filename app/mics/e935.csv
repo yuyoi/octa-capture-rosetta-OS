@@ -1,0 +1,28 @@
+# Sennheiser e 935, on-axis free-field response, read from the vector plot in Sennheiser quick guide 50161 (08/2024).
+# Averaged per third octave, 0 dB = 1 kHz. Excludes proximity effect, so close singing has more low end than this.
+50, -16.8
+63, -13.9
+79, -11.1
+100, -7.8
+126, -4.6
+159, -2.6
+200, -1.7
+252, -1.7
+317, -1.7
+400, -1.6
+504, -1.2
+635, -0.8
+800, -0.4
+1008, 0.0
+1270, 0.1
+1600, -0.0
+2016, 0.0
+2540, 1.0
+3200, 2.3
+4032, 2.9
+5080, 3.4
+6400, 3.6
+8063, 3.3
+10159, 3.1
+12800, -1.3
+16127, -11.0

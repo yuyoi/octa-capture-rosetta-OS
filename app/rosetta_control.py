@@ -21,8 +21,8 @@ import time
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QLinearGradient, QPainter, QPainterPath, QPen,
                            QIcon, QKeySequence, QPixmap, QPolygonF, QRadialGradient, QShortcut)
-from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ART = os.path.join(HERE, '..', 'art', 'app')
@@ -58,6 +58,7 @@ BLUE = QColor('#2d6bd2')
 BLUE_LIT = QColor('#62b2ff')
 LCD_BG = QColor('#070a10')                 # dark glass (user: no white screens)
 LCD_INK = QColor('#62b2ff')
+TOUCH_H = 40                               # every button at least this tall: a fingertip, not a mouse tip
 INK = (98, 178, 255)
 HOT = QColor('#ff5a4a')
 FS = 48000.0
@@ -152,6 +153,13 @@ class Panel(QWidget):
             p.setPen(QPen(QColor(220, 224, 228, 70), 1))
             p.drawLine(QPointF(tr.left() + w + 8, tr.center().y()), QPointF(tr.right(), tr.center().y()))
 
+def fine_factor(e, x0):
+    """Shift = fine; on touch (no Shift) slide the finger sideways off the knob: the further, the finer (down to 1/6)"""
+    if e.modifiers() & Qt.ShiftModifier:
+        return 0.25
+    return max(1 / 6, 1.0 / (1.0 + max(0.0, abs(e.position().x() - x0) - 30) / 50))
+
+
 class BlueButton(QWidget):
     toggled = Signal(bool)
 
@@ -219,13 +227,13 @@ class Knob(QWidget):
         self.update()
 
     def mousePressEvent(self, e):
-        self._drag = (e.position().y(), self.frac())
+        self._drag = (e.position().x(), e.position().y())
 
     def mouseMoveEvent(self, e):
-        if self._drag:
-            y0, f0 = self._drag
-            fine = 0.25 if e.modifiers() & Qt.ShiftModifier else 1.0
-            self.set_frac(f0 + (y0 - e.position().y()) / 180 * fine)
+        if self._drag:                                 # step by step, so the fine factor can change mid-drag
+            x0, y_last = self._drag
+            self.set_frac(self.frac() + (y_last - e.position().y()) / 180 * fine_factor(e, x0))
+            self._drag = (x0, e.position().y())
 
     def mouseReleaseEvent(self, e):
         self._drag = None
@@ -297,9 +305,14 @@ class LcdEq(QWidget):
         self.setMinimumSize(520, 230)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._drag = None
+        self.sel = None                          # the band last touched: ringed, its values shown on the screen
+        self.overlay = None                      # [(Hz, dB)]: what a mic's curve asks for, drawn dashed behind the EQ
+
+    NODE_R = 12                                  # drawn node radius (touch: was 6)
+    GRAB = 46                                    # a press this close (px) to a node takes the nearest one
 
     def plot(self):
-        return QRectF(self.rect()).adjusted(16, 14, -16, -26)
+        return QRectF(self.rect()).adjusted(24, 24, -24, -28)
 
     def fx(self, f):
         r = self.plot()
@@ -332,24 +345,55 @@ class LcdEq(QWidget):
     def node_pos(self, kind, fk, gk):
         return QPointF(self.fx(self.c[fk]), self.dy(self.c[gk] if gk else 0) if gk else self.dy(-3))
 
-    def mousePressEvent(self, e):
+    def nearest(self, pos):
+        """the band whose node is closest to pos, if within GRAB px (the selected one wins a tie)"""
+        best, bd = None, self.GRAB
         for kind, fk, gk in self.NODES:
-            if (self.node_pos(kind, fk, gk) - e.position()).manhattanLength() < 14:
-                self._drag = (fk, gk)
-                return
+            d = self.node_pos(kind, fk, gk) - pos
+            d = math.hypot(d.x(), d.y()) - (0.5 if kind == self.sel else 0)
+            if d < bd:
+                best, bd = (kind, fk, gk), d
+        return best
+
+    def mousePressEvent(self, e):
+        hit = self.nearest(e.position())
+        if not hit:
+            return
+        kind, fk, gk = hit
+        self.sel = kind
+        self._drag = (fk, gk, self.node_pos(kind, fk, gk) - e.position())   # keep the grab offset: no jump
+        self.update()
 
     def mouseMoveEvent(self, e):
         if not self._drag:
             return
-        fk, gk = self._drag
-        self.c[fk] = round(self.xf(e.position().x()), 1)
+        fk, gk, off = self._drag
+        pt = e.position() + off
+        self.c[fk] = round(self.xf(pt.x()), 1)
         if gk:
-            self.c[gk] = round(self.yd(e.position().y()) * 2) / 2
+            self.c[gk] = round(self.yd(pt.y()) * 2) / 2
         self.edited.emit()
         self.update()
 
     def mouseReleaseEvent(self, e):
         self._drag = None
+
+    def wheelEvent(self, e):
+        """wheel over the screen: Q of the PEAK band (touch: the Q knob under the screen)"""
+        if self.sel == 'peak' or (self.nearest(e.position()) or ('',))[0] == 'peak':
+            self.sel = 'peak'
+            q = self.c['peak_q'] * (1.1 if e.angleDelta().y() > 0 else 1 / 1.1)
+            self.c['peak_q'] = round(min(8.0, max(0.3, q)), 2)
+            self.edited.emit()
+            self.update()
+
+    def readout(self, kind):
+        c = self.c
+        hz = lambda f: f'{f / 1000:.2f} kHz' if f >= 1000 else f'{f:.0f} Hz'
+        if kind == 'hpf':
+            return f'HPF  {hz(c["hpf_f"])}'
+        s = f'{kind.upper()}  {hz(c[kind + "_f"])}  {c[kind + "_g"]:+.1f} dB'
+        return s + f'  Q {c["peak_q"]:.2f}' if kind == 'peak' else s
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -379,6 +423,9 @@ class LcdEq(QWidget):
             p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
             p.setPen(QColor(*INK, 150))
             p.drawText(QRectF(x - 20, r.bottom() + 4, 40, 14), Qt.AlignCenter, f'{f // 1000}K' if f >= 1000 else str(f))
+        if self.overlay:
+            p.setPen(QPen(QColor(255, 196, 90, 200), 1.6, Qt.DashLine))
+            p.drawPolyline(QPolygonF([QPointF(self.fx(f), self.dy(max(-18, min(18, d)))) for f, d in self.overlay]))
         st = self.stages()
         n = 240
         pts = []
@@ -393,14 +440,41 @@ class LcdEq(QWidget):
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(LCD_INK, 2.6))
         p.drawPolyline(QPolygonF(pts))
-        for kind, fk, gk in self.NODES:                                       # nodes
+        R = self.NODE_R
+        for kind, fk, gk in sorted(self.NODES, key=lambda n: n[0] == self.sel):   # nodes, the selected one on top
             pt = self.node_pos(kind, fk, gk)
             on = self.c['on'][kind]
-            p.setPen(QPen(LCD_INK, 2))
+            sel = kind == self.sel
+            if sel:                                                           # halo + ring: this one is grabbed
+                halo = QRadialGradient(pt, R * 2.4)
+                halo.setColorAt(0, QColor(*INK, 110))
+                halo.setColorAt(1, QColor(*INK, 0))
+                p.setPen(Qt.NoPen)
+                p.setBrush(halo)
+                p.drawEllipse(pt, R * 2.4, R * 2.4)
+                p.setPen(QPen(QColor('#ffffff'), 1.6))
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(pt, R + 5, R + 5)
+            p.setPen(QPen(LCD_INK, 2.4))
             p.setBrush(LCD_INK if on else LCD_BG)
-            p.drawEllipse(pt, 6, 6)
-            p.setPen(LCD_INK)
-            p.drawText(QRectF(pt.x() - 30, pt.y() - 24, 60, 14), Qt.AlignCenter, kind.upper())
+            p.drawEllipse(pt, R, R)
+            p.setFont(font(9, True))
+            p.setPen(LCD_BG if on else LCD_INK)
+            p.drawText(QRectF(pt.x() - R, pt.y() - R, 2 * R, 2 * R), Qt.AlignCenter, dict(hpf='HP', low='LO', peak='PK', high='HI')[kind])
+            p.setFont(font(10, True))
+            p.setPen(QColor('#ffffff') if sel else LCD_INK)
+            ly = pt.y() - R - 18 if pt.y() - R - 18 > r.top() - 20 else pt.y() + R + 4   # under it at the top edge
+            p.drawText(QRectF(pt.x() - 30, ly, 60, 14), Qt.AlignCenter, kind.upper())
+        if self.sel:                                                          # the grabbed band's values
+            p.setFont(font(12, True))
+            t = self.readout(self.sel)
+            w = p.fontMetrics().horizontalAdvance(t) + 20
+            box = QRectF(r.right() - w, r.top() - 15, w, 22)
+            p.setPen(QPen(QColor(*INK, 160), 1))
+            p.setBrush(QColor(5, 7, 12, 220))
+            p.drawRoundedRect(box, 4, 4)
+            p.setPen(QColor('#ffffff'))
+            p.drawText(box, Qt.AlignCenter, t)
 
 
 class Meter(QWidget):
@@ -510,17 +584,39 @@ def rounded_pix(p, pm, rect, radius=6):
     p.restore()
 
 
+def draw_broadcast(p, cx, cy, color):
+    """the 'on air' mark: a dot with two arcs each side"""
+    p.save()
+    p.setBrush(color)
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(QPointF(cx, cy), 2.4, 2.4)
+    p.setBrush(Qt.NoBrush)
+    p.setPen(QPen(color, 1.6, Qt.SolidLine, Qt.RoundCap))
+    for r in (5.5, 9.0):
+        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+        p.drawArc(rect, -45 * 16, 90 * 16)
+        p.drawArc(rect, 135 * 16, 90 * 16)
+    p.restore()
+
+
 class TrackButton(QWidget):
-    """a channel in the rail: picture + number + name; lit blue when selected. Double-click / right-click = edit."""
+    """a channel in the rail: picture + number + name; lit blue when selected. Double-click = name + picture,
+    right-click = menu (name + picture, send to stream). The broadcast mark shows it is being sent."""
     clicked = Signal()
     edit = Signal()
+    menu = Signal()
 
     def __init__(self, n, parent=None):
         super().__init__(parent)
-        self.n, self.name, self.pm, self.checked = n, '', QPixmap(), False
+        self.n, self.name, self.pm, self.checked, self.stream = n, '', QPixmap(), False, False
         self.setFixedSize(150, 52)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip('double-click or right-click: name + picture')
+        self.setToolTip('double-click: name + picture. Right-click or HOLD: more (send to stream)')
+        self.hold = QTimer(self)                       # touch: press and hold 0.5 s = the right-click menu
+        self.hold.setSingleShot(True)
+        self.hold.setInterval(500)
+        self.hold.timeout.connect(self._held)
+        self._p0, self._held_fired = None, False
 
     def set_track(self, t):
         self.name = t.get('name', '')
@@ -529,11 +625,27 @@ class TrackButton(QWidget):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.RightButton:
-            self.edit.emit()
+            self.menu.emit()
         else:
             self.clicked.emit()
+            self._p0, self._held_fired = e.position(), False
+            self.hold.start()
+
+    def mouseMoveEvent(self, e):
+        if self._p0 is not None and (e.position() - self._p0).manhattanLength() > 12:
+            self.hold.stop()                           # a finger that slides is not a hold
+
+    def mouseReleaseEvent(self, e):
+        self.hold.stop()
+        self._p0 = None
+
+    def _held(self):
+        self._held_fired = True
+        self._p0 = None
+        self.menu.emit()
 
     def mouseDoubleClickEvent(self, e):
+        self.hold.stop()
         self.edit.emit()
 
     def paintEvent(self, e):
@@ -577,6 +689,8 @@ class TrackButton(QWidget):
         else:
             p.drawText(QRectF(tx, r.top(), r.right() - tx - 4, r.height()), Qt.AlignLeft | Qt.AlignVCenter,
                        str(self.n + 1))
+        if self.stream:
+            draw_broadcast(p, r.right() - 14, r.top() + 13, QColor('#ffffff') if self.checked else LCD_INK)
 
 
 class TrackDialog(QDialog):
@@ -590,7 +704,7 @@ class TrackDialog(QDialog):
                            'QLineEdit{background:#05070c;color:#62b2ff;border:2px solid #8c9299;border-radius:5px;'
                            'padding:6px;font:bold 15px "Segoe UI";}'
                            'QPushButton{background:#b4b8bd;color:#24272b;border:2px solid #d6d9dd;border-radius:5px;'
-                           'padding:6px 12px;font:bold 12px "Segoe UI";} QPushButton:checked{background:#3a86e8;color:white;}')
+                           'padding:10px 16px;font:bold 13px "Segoe UI";} QPushButton:checked{background:#3a86e8;color:white;}')
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel(f'INPUT {n + 1}  NAME'))
         self.edit = QLineEdit(t.get('name', ''))
@@ -642,6 +756,8 @@ class TrackDialog(QDialog):
 class ChannelRail(QWidget):
     picked = Signal(int)
     renamed = Signal()
+    stream_toggle = Signal(int)
+    stream_settings = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -650,6 +766,7 @@ class ChannelRail(QWidget):
         lay.setSpacing(6)
         self.unit = 0
         self.tracks = load_tracks(0)
+        self.stream_name, self.sends = 'Discord', set()
         self.btns, self.meters = [], []
         for i in range(8):
             row = QHBoxLayout()
@@ -659,6 +776,7 @@ class ChannelRail(QWidget):
             b.set_track(self.tracks[i])
             b.clicked.connect(lambda k=i: self.pick(k))
             b.edit.connect(lambda k=i: self.edit(k))
+            b.menu.connect(lambda k=i: self.show_menu(k))
             m = Meter(10)
             m.setFixedHeight(52)
             row.addWidget(b)
@@ -681,6 +799,27 @@ class ChannelRail(QWidget):
             self.btns[k].set_track(self.tracks[k])
             save_tracks(self.tracks, self.unit)
             self.renamed.emit()
+
+    def build_menu(self, k):
+        m = QMenu(self)
+        m.setStyleSheet('QMenu{background:#15171a;color:#e6e9ec;border:1px solid #8c9299;font:bold 14px "Segoe UI";}'
+                        'QMenu::item{padding:13px 26px;} QMenu::item:selected{background:#2d6bd2;}')
+        m.addAction('Name and picture...', lambda: self.edit(k))
+        send = m.addAction(f'Send to {self.stream_name}', lambda: self.stream_toggle.emit(k))
+        send.setCheckable(True)
+        send.setChecked(k in self.sends)
+        m.addSeparator()
+        m.addAction(f'{self.stream_name} settings...', self.stream_settings.emit)
+        return m
+
+    def show_menu(self, k):
+        self.build_menu(k).exec(self.btns[k].mapToGlobal(self.btns[k].rect().bottomLeft()))
+
+    def set_stream(self, name, sends):
+        self.stream_name, self.sends = name, set(sends)
+        for i, b in enumerate(self.btns):
+            b.stream = i in self.sends
+            b.update()
 
     def set_unit(self, u):
         self.unit = u
@@ -735,9 +874,23 @@ class Header(QWidget):
         p.drawText(QRectF(r.right() - 548, 20, 540, 20), Qt.AlignLeft | Qt.AlignVCenter, self.text)
 
 
+def mic_overlay(c):
+    """the dashed line for an input with a mic curve on it, or None"""
+    if c.get('mic', 'off') == 'off':
+        return None
+    import mic_comp
+    try:
+        return list(zip(mic_comp.GRID, mic_comp.correction(mic_comp.load(c['mic']))))
+    except (OSError, ValueError):
+        return None
+
+
 class StripPage(QWidget):
     preset = Signal(str)
     amp = Signal(str)
+    amp_knob = Signal(str, float)                     # amp head knob: key, 0-10
+    dirty = Signal()                                  # something worth saving changed
+    mic = Signal()                                    # next mic curve for the shown input
 
     def __init__(self, chans, parent=None):
         super().__init__(parent)
@@ -751,21 +904,27 @@ class StripPage(QWidget):
         blocks.setSpacing(8)
         self.blk = {}
         for k in ('hpf', 'low', 'peak', 'high', 'tube', 'comp', 'gate'):
-            b = BlueButton(k.upper(), checked=c['on'][k], w=74, h=30)
+            b = BlueButton(k.upper(), checked=c['on'][k], w=74, h=TOUCH_H)
             b.toggled.connect(lambda v, kk=k: self.set_on(kk, v))
             blocks.addWidget(b)
             self.blk[k] = b
         blocks.addStretch(1)
         for name in ('vocal', 'guitar', 'flat'):         # ready-made chains for the shown input
-            b = BlueButton(name.upper(), w=74, h=30)
+            b = BlueButton(name.upper(), w=74, h=TOUCH_H)
             b.toggled.connect(lambda _, n=name, btn=b: (setattr(btn, 'checked', False), btn.update(), self.preset.emit(n)))
             blocks.addWidget(b)
         self.amp_btn = QPushButton('AMP OFF')            # click = next amp voice for the shown input
-        self.amp_btn.setFixedSize(112, 30)
+        self.amp_btn.setFixedSize(112, TOUCH_H)
         self.amp_btn.setStyleSheet('QPushButton{color:#c9ced4;background:#2a2d31;border:1px solid #4a4f55;border-radius:4px;'
                                    'font:bold 11px "Segoe UI";}')
         self.amp_btn.clicked.connect(self.next_amp)
         blocks.addWidget(self.amp_btn)
+        self.mic_btn = QPushButton('MIC OFF')            # click = next mic curve (app/mics/) for the shown input
+        self.mic_btn.setFixedSize(112, TOUCH_H)
+        self.mic_btn.setStyleSheet(self.amp_btn.styleSheet())
+        self.mic_btn.setToolTip('correct this input for its microphone: the three EQ bands are fitted to the mic\'s curve')
+        self.mic_btn.clicked.connect(self.mic.emit)
+        blocks.addWidget(self.mic_btn)
         root.addLayout(blocks)
         mid = QHBoxLayout()
         mid.setSpacing(10)
@@ -795,6 +954,16 @@ class StripPage(QWidget):
             kr.addWidget(knob(key, *args, size=52))
         ev.addLayout(kr)
         mid.addWidget(eqp, 1)
+        from amp_panel import AmpHead                      # in amp mode the EQ screen becomes the amp head
+        self.amp_head = AmpHead()
+        self.amp_head.knob.connect(self.amp_knob.emit)
+        self.amp_head.voice.connect(self.amp.emit)
+        self.amp_preset = self.amp_head.preset                  # tone presets (amp_presets.py)
+        self.amp_save = self.amp_head.save_preset
+        self.amp_delete = self.amp_head.delete_preset
+        self.amp_head.hide()
+        mid.addWidget(self.amp_head, 1)
+        self.gate = None                                   # main window: gate(ch, change) -> allowed by the DSP budget
         # right column: preamp + tube + comp
         right = QVBoxLayout()
         right.setSpacing(10)
@@ -805,7 +974,7 @@ class StripPage(QWidget):
         self.gain.changed.connect(self.gain_turned)
         pl.addWidget(self.gain)
         pv = QVBoxLayout()
-        self.b48 = BlueButton('+48V', checked=c['ph48'], w=74, h=30)
+        self.b48 = BlueButton('+48V', checked=c['ph48'], w=74, h=TOUCH_H)
         self.b48.toggled.connect(self.ph48_toggled)
         pv.addWidget(self.b48)
         self.inlab = QLabel('IN  --')
@@ -853,14 +1022,19 @@ class StripPage(QWidget):
 
     def push(self, block):
         c = self.chans[self.ch]
-        if self.link and block != 'gate':
+        if self.link:
             self.link.set_block(self.ch, block, c['on'][block], dict(c))
 
     def set_on(self, k, v):
+        if v and k != 'gate' and self.gate and not self.gate(self.ch, lambda n: n['on'].__setitem__(k, True)):
+            self.blk[k].checked = False
+            self.blk[k].update()
+            return
         self.chans[self.ch]['on'][k] = v
         self.push(k)
         self.eq.update()
         self.refresh_tube()
+        self.dirty.emit()
 
     def set_val(self, k, v):
         c = self.chans[self.ch]
@@ -869,35 +1043,47 @@ class StripPage(QWidget):
             self.push(KEY_BLOCK[k])
         self.eq.update()
         self.refresh_tube()
+        self.dirty.emit()
 
     def eq_edited(self):
         self.sync_knobs()
         for b in ('hpf', 'low', 'peak', 'high'):
             if self.chans[self.ch]['on'][b]:
                 self.push(b)
+        self.dirty.emit()
 
     def gain_turned(self, v):
         v = round(v * 2) / 2
         self.chans[self.ch]['pre_gain'] = v
+        self.chans[self.ch]['gain_known'] = True
         if self.link:
             self.link.set_gain(self.ch, round(v * 2))
+        self.dirty.emit()
 
     def ph48_toggled(self, on):
         self.chans[self.ch]['ph48'] = on
         if self.link:
             self.link.set_48v(self.ch, on)
 
-    def on_preamp(self, ch, raw, ph):
+    def on_preamp(self, ch, raw, ph, hiz=-1):
         if ch != self.ch:
             return
         c = self.chans[ch]
+        changed = False
         if self.gain._drag is None:
+            changed = c['pre_gain'] != raw / 2 or not c.get('gain_known')      # the front-panel knob counts too
             c['pre_gain'] = raw / 2
+            c['gain_known'] = True
             self.gain.val = raw / 2
             self.gain.update()
         c['ph48'] = bool(ph)
         self.b48.checked = bool(ph)
         self.b48.update()
+        if hiz >= 0 and c.get('hiz') != bool(hiz):
+            c['hiz'] = bool(hiz)
+            changed = True
+        if changed:
+            self.dirty.emit()
 
     def on_flags(self, fl):
         for ch, on in enumerate(fl):
@@ -916,7 +1102,7 @@ class StripPage(QWidget):
         self.tube.update()
 
     def next_amp(self):
-        voices = ('off', 'clean', 'crunch', 'lead', 'cranked')
+        voices = ('off', 'clean', 'crunch', 'lead', 'cranked', 'fuzz')
         cur = self.chans[self.ch].get('amp', 'off')
         self.amp.emit(voices[(voices.index(cur) + 1) % len(voices)])
 
@@ -926,6 +1112,13 @@ class StripPage(QWidget):
             self.link.watch = k
         c = self.chans[k]
         self.amp_btn.setText('AMP ' + c.get('amp', 'off').upper())
+        amp_on = c.get('amp', 'off') != 'off'
+        self.eqp.setVisible(not amp_on)
+        self.amp_head.setVisible(amp_on)
+        if amp_on:
+            self.amp_head.show_channel(c, getattr(self, 'track_name', ''))
+        self.mic_btn.setText('MIC ' + c.get('mic', 'off').upper()[:10])
+        self.eq.overlay = mic_overlay(c)
         self.gain.val = c['pre_gain']
         self.gain.update()
         self.b48.checked = c['ph48']
@@ -933,6 +1126,7 @@ class StripPage(QWidget):
         self.eq.c = c
         for key, b in self.blk.items():
             b.checked = c['on'][key]
+            b.setVisible(not (amp_on and key in ('low', 'peak', 'high')))     # in amp mode those are the amp's tone knobs
             b.update()
         self.sync_knobs()
         self.eq.update()
@@ -946,7 +1140,7 @@ class RecButton(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.on, self.text = False, 'REC'
-        self.setFixedSize(132, 32)
+        self.setFixedSize(132, TOUCH_H)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip('one tap: record every input of both boxes (space bar)')
 
@@ -982,6 +1176,9 @@ class RecButton(QWidget):
 
 
 class Main(QWidget):
+    bench_done = Signal(int)
+    mode_changed = Signal(int, str)
+
     def __init__(self, demo=False):
         super().__init__()
         self.setWindowTitle('Rosetta Octa Control')
@@ -995,6 +1192,16 @@ class Main(QWidget):
         self.units = [dict(chans=[default_chan(demo) for _ in range(8)], link=None) for _ in range(2)]
         self.cur = 0
         self.chans = self.units[0]['chans']
+        import octa_setup
+        self.setup = octa_setup
+        self.setup_path = None if demo else octa_setup.PATH   # a demo never reads or writes your settings
+        self.rig, self.has_saved = dict(octa_setup.DEFAULT_RIG), False
+        self.restoring = [0.0, 0.0]                           # until this time the box's gains are not news
+        self.closing = self.engine_dead = self.engine_nobox = False
+        self.engine_backoff, self.engine_next, self.fc = 10.0, 0.0, None
+        self.box_unit, self.unit_ok = [], set()               # engine box -> unit, and the units we are sure about
+        self.octas_seen, self.count_next = 0, 0.0             # boxes Windows has, when the engine found fewer
+        self.load_setup()
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(0)
@@ -1010,7 +1217,7 @@ class Main(QWidget):
         ub.setSpacing(6)
         self.unitbtn = []
         for i in range(2):
-            b = BlueButton(f'UNIT {i + 1}', checked=(i == 0), w=80, h=30)
+            b = BlueButton(f'UNIT {i + 1}', checked=(i == 0), w=80, h=TOUCH_H)
             b.toggled.connect(lambda _, k=i: self.select_unit(k))
             ub.addWidget(b)
             self.unitbtn.append(b)
@@ -1025,9 +1232,17 @@ class Main(QWidget):
         pages.setSpacing(8)
         self.pagebtn = []
         for i, t in enumerate(('STRIP', 'MIXER', 'ROUTING', 'REVERB', 'SYSTEM')):
-            b = BlueButton(t, checked=(i == 0), w=100, h=32)
+            b = BlueButton(t, checked=(i == 0), w=100, h=TOUCH_H)
             pages.addWidget(b)
             self.pagebtn.append(b)
+        pages.addSpacing(18)
+        import dsp_budget
+        self.dspb = dsp_budget
+        self.budget = dsp_budget.Budget()
+        self.dsp_bar = dsp_budget.DspBar(360, TOUCH_H)
+        self.dsp_bar.clicked.connect(self.show_dsp_tasks)
+        pages.addWidget(self.dsp_bar)
+        self.dsp_win = None
         pages.addStretch(1)
         self.rec_info = QLabel('')
         self.rec_info.setStyleSheet('color:#c9ced4;font:bold 12px "Segoe UI";')
@@ -1035,10 +1250,16 @@ class Main(QWidget):
         self.mon = QPushButton('MONITOR OTHER BOX')              # the other box's inputs in this box's outputs, over USB
         self.mon.setCheckable(True)
         self.mon.setStyleSheet('QPushButton{color:#c9ced4;background:#2a2d31;border:1px solid #4a4f55;border-radius:4px;'
-                               'padding:6px 10px;font:bold 11px "Segoe UI";}'
+                               'padding:6px 12px;min-height:26px;font:bold 11px "Segoe UI";}'
                                'QPushButton:checked{color:#fff;background:#1f6fd0;border-color:#6fb0ff;}')
-        self.mon.toggled.connect(lambda on: self.engine and self.engine.monitor(on))
+        self.mon.toggled.connect(self.on_mon)
         pages.addWidget(self.mon)
+        self.mode_btn = QPushButton('FAT')                       # FAT = full precision, SLIM = cheaper DSP for more strips
+        self.mode_btn.setToolTip('FAT: every filter at full precision. SLIM: cheaper filters where nobody can hear the difference, '
+                                 'comp worked out every 8 samples. More strips fit.')
+        self.mode_btn.setStyleSheet(self.mon.styleSheet())
+        self.mode_btn.clicked.connect(self.toggle_mode)
+        pages.addWidget(self.mode_btn)
         self.rec = RecButton()
         self.rec.clicked.connect(self.toggle_rec)
         pages.addWidget(self.rec)
@@ -1049,6 +1270,10 @@ class Main(QWidget):
         body.addLayout(col, 1)
         root.addLayout(body, 1)
         self.rail.picked.connect(self.strip.show_chan)
+        self.strip.gate = lambda ch, change: self.dsp_gate(self.cur, ch, change)
+        self.dsp_timer = QTimer(self)
+        self.dsp_timer.timeout.connect(self.refresh_dsp)
+        self.dsp_timer.start(400)
         self.rail.picked.connect(lambda k: self.retitle())
         self.rail.renamed.connect(self.retitle)
         self.retitle()
@@ -1062,29 +1287,58 @@ class Main(QWidget):
             from octa_link import Link
             for i, u in enumerate(self.units):
                 L = u['link'] = Link(i)
-                L.status.connect(lambda t, o, k=i: self.usb_rate or self.header.unit_status(k, t, o))
+                L.status.connect(lambda t, o, k=i: self.usb_rate or self.engine_nobox or self.header.unit_status(k, t, o))
                 L.meters.connect(lambda db, gr, k=i: k == self.cur and self.on_link_meters(db, gr))
-                L.preamp.connect(lambda ch, g, ph, k=i: k == self.cur and self.strip.on_preamp(ch, g, ph))
+                L.preamp.connect(lambda ch, g, ph, z, k=i: time.time() >= self.restoring[k] and self.trusted(k)
+                                 and self.on_unit_preamp(k, ch, g, ph, z))
                 L.flags.connect(lambda fl, k=i: self.on_flags(k, fl))
+                L.load.connect(lambda busy, per, k=i: self.budget.update(k, busy, per))
                 L.start()
             self.strip.link = self.units[0]['link']
             from octa_engine import Engine
             self.engine = Engine()
             self.engine.ready.connect(self.on_engine_ready)
-            self.engine.meters.connect(lambda box, db: box == self.cur and self.on_meters(db, 0.0))
+            self.engine.nobox.connect(lambda: setattr(self, 'engine_nobox', True))
+            self.engine.meters.connect(lambda box, db: self.unit_of(box) == self.cur and self.on_meters(db, 0.0))
             self.usb_m = {}
-            self.engine.meters.connect(lambda box, db: self.usb_m.__setitem__(box, db))
+            self.engine.meters.connect(lambda box, db: self.usb_m.__setitem__(self.unit_of(box), db))
             self.engine.started.connect(self.on_rec_started)
             self.engine.done.connect(self.finish_take)
-            self.engine.error.connect(lambda t: self.rec_info.setText('ENGINE: ' + t))
+            self.engine.error.connect(self.on_engine_error)
+            self.engine.feed_status.connect(self.on_feed_status)
             self.engine.start()
+            if self.rig.get('monitor'):                           # it was on when the app last closed
+                QTimer.singleShot(3000, lambda: self.mon.setChecked(True))
+            self.link_timer = QTimer(self)
+            self.link_timer.timeout.connect(self.watch_links)
+            self.link_timer.start(2000)
+            if self.rig['focusrite_inputs']:
+                from focusrite import Keeper
+                self.fc = Keeper(self.rig['focusrite_inputs'], log=self.do_log)
+                self.fc.start()
+        self.save_timer = QTimer(self)
+        self.save_timer.setSingleShot(True)
+        self.save_timer.timeout.connect(self.save_setup)
+        self.strip.dirty.connect(self.touch)
+        self.strip.mic.connect(self.next_mic)
+        self.strip.amp_knob.connect(lambda key, v: self.set_amp_knob(self.cur, self.strip.ch, key, v))
+        self.strip.amp_preset.connect(lambda n: self.load_amp_preset(self.cur, self.strip.ch, n))
+        self.strip.amp_save.connect(lambda n: self.save_amp_preset(self.cur, self.strip.ch, n))
+        self.strip.amp_delete.connect(self.delete_amp_preset)
+        self.rail.stream_toggle.connect(self.toggle_send)
+        self.rail.stream_settings.connect(self.stream_dialog)
+        self.feed_dev, self.feed_last = None, ''
+        self.refresh_stream_marks()
+        self.bench_done.connect(self.after_bench)
+        self.mode_changed.connect(self.on_mode)
         self.rec_timer = QTimer(self)
         self.rec_timer.timeout.connect(self.rec_tick)
         self.strip.preset.connect(lambda name: self.apply_preset(self.cur, self.strip.ch, name))
         self.strip.amp.connect(lambda v: self.set_amp(self.cur, self.strip.ch, v))
         self.do_timer = QTimer(self)
         self.do_timer.timeout.connect(self.poll_do)
-        self.do_timer.start(300)
+        if self.setup_path:                                   # a demo never takes the real app's commands
+            self.do_timer.start(300)
 
     def on_link_meters(self, db, gr):
         if not self.usb_rate:
@@ -1093,13 +1347,224 @@ class Main(QWidget):
         self.strip.gr.level = min(1.0, max(0.0, gr / 20))     # on USB the engine feeds the input meters
         self.strip.gr.update()
 
+    # ---------------- settings that survive a power cut (app/setup.json, octa_setup.py) ----------------
+    def load_setup(self):
+        d = self.setup_path and self.setup.load(self.setup_path)
+        if not d:
+            return
+        self.rig, self.has_saved = d['rig'], True
+        for u, saved in zip(self.units, d['units']):
+            for c, s in zip(u['chans'], saved):
+                c['on'].update(s.get('on', {}))
+                c.update({k: v for k, v in s.items() if k != 'on'})
+
+    def touch(self):
+        if self.setup_path:
+            self.save_timer.start(1500)
+
+    def save_setup(self):
+        if not self.setup_path:
+            return
+        try:
+            self.setup.save(dict(units=[u['chans'] for u in self.units], rig=self.rig), self.setup_path)
+            self.has_saved = True
+        except OSError as e:
+            self.rec_info.setText('could not save settings: ' + str(e)[:60])
+
+    def restore_unit(self, k):
+        """a box that came up with an empty strip gets everything back; +48V stays the user's button"""
+        u, L = self.units[k], self.units[k]['link']
+        self.restoring[k] = time.time() + 3.0                 # don't take its boot-up gains for your settings
+        for ch, c in enumerate(u['chans']):
+            for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp', 'gate'):
+                if c['on'].get(b):
+                    L.set_block(ch, b, True, dict(c))
+            if c.get('gain_known'):
+                L.set_gain(ch, round(c['pre_gain'] * 2))
+            if ch < 2 and 'hiz' in c:
+                L.set_hiz(ch, c['hiz'])
+            if c.get('amp', 'off') != 'off':
+                self.push_amp(k, ch)
+        self.do_log(f'unit {k + 1}: restored after power-up')
+        if not self.recording:
+            self.rec_info.setText(f'UNIT {k + 1}: your settings are back')
+
+    def apply_routes(self, k):
+        L = self.units[k]['link']
+        for pair, wire in self.rig['patchbay'].get(str(k), {}).items():
+            L.ensure_patchbay(int(pair), wire, lambda p, w, u=k: self.do_log(f'unit {u + 1}: output pair {p} set back to {w}'))
+
+    def on_engine_error(self, t):
+        if self.engine_nobox and 'has stopped' in t:          # it only stopped because there was no box to talk to
+            return
+        self.rec_info.setText('ENGINE: ' + t)
+        if not self.closing and ('disconnected' in t or 'has stopped' in t):
+            self.engine_dead = True
+
+    def watch_links(self):
+        """power-cycled boxes leave the engine holding dead USB handles: start a new engine, gently, until they answer"""
+        if self.closing or self.recording:
+            return
+        now = time.time()
+        if self.engine_nobox:                                 # rack off (or boxes on another driver): keep looking
+            if now >= self.engine_next:
+                self.engine_next = now + 8.0
+                self.header.units.clear()
+                self.header.set_status('WAITING FOR THE BOXES: switch them on', False)
+                self.rec_info.setText('no box on USB yet')
+                self.engine.restart()
+            return
+        if self.usb_boxes < 2 and now >= self.count_next:     # a box that was still booting when the engine looked
+            self.count_next = now + 20.0
+            import threading
+            threading.Thread(target=self.count_octas, daemon=True).start()
+        if self.octas_seen > self.usb_boxes and now >= self.engine_next:
+            self.octas_seen = 0
+            self.engine_next = now + 20.0
+            self.do_log('engine: Windows has more boxes than the engine found, looking again')
+            self.engine.restart()
+            return
+        late = [i for i in self.unit_ok
+                if not getattr(self.units[i]['link'], 'busy', False) and now - self.units[i]['link'].last_ok > 10]
+        if not late and not self.engine_dead:
+            self.engine_backoff = 10.0
+            return
+        if now < self.engine_next:
+            return
+        self.engine_next = now + self.engine_backoff
+        self.engine_backoff = min(60.0, self.engine_backoff * 2)
+        self.engine_dead = False
+        self.do_log(f'engine: restarting (boxes not answering: {[i + 1 for i in late]})')
+        self.header.set_status('RECONNECTING...', False)
+        self.engine.restart()
+
+    def count_octas(self):
+        """how many OCTA-CAPTUREs Windows has right now (runs in a thread)"""
+        import subprocess
+        try:
+            ps = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+            r = subprocess.run([ps, '-NoProfile', '-Command',
+                                "@(Get-PnpDevice -PresentOnly -InstanceId 'USB\\VID_0582&PID_0120\\*' -ErrorAction SilentlyContinue).Count"],
+                               capture_output=True, text=True, timeout=20, creationflags=0x08000000)
+            self.octas_seen = int(r.stdout.strip() or 0)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+
+    # ---------------- send to stream (dual/src/win/feed.h): ticked inputs, after their strips, into one playback device ----------------
+    def stream(self):
+        return self.rig.setdefault('stream', self.setup.clean_stream(None))
+
+    def refresh_stream_marks(self):
+        st = self.stream()
+        self.rail.set_stream(st['name'], st['sends'].get(str(self.cur), []))
+
+    def toggle_send(self, k):
+        st = self.stream()
+        sends = set(st['sends'].get(str(self.cur), []))
+        sends ^= {k}
+        if sends:
+            st['sends'][str(self.cur)] = sorted(sends)
+        else:
+            st['sends'].pop(str(self.cur), None)
+        self.refresh_stream_marks()
+        self.save_setup()
+        self.apply_stream()
+        on = k in sends
+        self.do_log(f'stream: unit {self.cur + 1} input {k + 1} {"sent to" if on else "no longer sent to"} {st["name"]}')
+        if not self.recording:
+            self.rec_info.setText(f'{self.rail.label(k)} {"-> " + st["name"] if on else "not sent to " + st["name"]}')
+
+    def apply_stream(self):
+        """tell the engine which inputs of which box go out, and start or stop the sending"""
+        if not self.engine or not self.usb_rate:
+            return
+        st = self.stream()
+        anything = False
+        for b, u in enumerate(self.box_unit):
+            sends = set(st['sends'].get(str(u), [])) if u is not None else set()
+            self.engine.fgain(b, [1.0 if c in sends else 0.0 for c in range(10)])
+            anything |= bool(sends)
+        want = st['device'] if anything else None
+        if want != self.feed_dev:
+            self.feed_dev = want
+            self.engine.feed(want)
+
+    def on_feed_status(self, ln):
+        st = self.stream()
+        self.feed_last = ln
+        a = ln.split()
+        if a[0] == 'F' or a[1] in ('underrun', 'fix'):
+            return                                    # numbers and single events, read with `stream status`
+        if a[1] == 'nodevice':
+            self.feed_dev = None
+            msg = f'{st["name"]}: no playback device called "{st["device"]}". Install VB-Cable, or pick one in {st["name"]} settings'
+        elif a[1] == 'on':
+            msg = f'{st["name"]}: sending to {" ".join(a[4:])}'
+        elif a[1] == 'error':
+            self.feed_dev = None
+            msg = f'{st["name"]}: {" ".join(a[2:])}'
+        else:
+            msg = f'{st["name"]}: stopped'
+        self.do_log('stream: ' + msg)
+        if not self.recording:
+            self.rec_info.setText(msg)
+
+    def stream_dialog(self):
+        st = self.stream()
+        d = QDialog(self)
+        d.setWindowTitle('Send to stream')
+        d.setStyleSheet('QDialog{background:#111316;} QLabel{color:#e6e9ec;font:bold 12px "Segoe UI";}'
+                        'QLineEdit,QComboBox{background:#05070c;color:#62b2ff;border:2px solid #8c9299;border-radius:5px;'
+                        'padding:6px;font:bold 14px "Segoe UI";} QPushButton{background:#b4b8bd;color:#24272b;'
+                        'border:2px solid #d6d9dd;border-radius:5px;padding:10px 16px;font:bold 13px "Segoe UI";}')
+        lay = QVBoxLayout(d)
+        lay.addWidget(QLabel('NAME (shown in the menu)'))
+        name = QLineEdit(st['name'])
+        name.setMaxLength(24)
+        lay.addWidget(name)
+        lay.addWidget(QLabel('SEND TO THIS PLAYBACK DEVICE (its other end is the mic you pick in the app)'))
+        dev = QComboBox()
+        dev.setEditable(True)
+        for n in playback_devices():
+            dev.addItem(n)
+        dev.setCurrentText(st['device'])
+        lay.addWidget(dev)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        ok = QPushButton('OK')
+        ok.clicked.connect(d.accept)
+        row.addWidget(ok)
+        lay.addLayout(row)
+        self._stream_dialog = (d, name, dev)                  # tests reach in here
+        if d.exec():
+            self.set_stream_route(name.text(), dev.currentText())
+
+    def set_stream_route(self, name, device):
+        st = self.stream()
+        clean = self.setup.clean_stream(dict(name=name, device=device, sends=st['sends']))
+        st['name'], st['device'] = clean['name'], clean['device']
+        self.refresh_stream_marks()
+        self.save_setup()
+        self.feed_dev = None if self.feed_dev else self.feed_dev   # new device: restart the sending
+        self.apply_stream()
+
     # ---------------- ready-made chains ----------------
     def apply_preset(self, unit, ch, name):
         p = PRESETS[name]
         c = self.units[unit]['chans'][ch]
+
+        def change(n):
+            n['amp'] = 'off'
+            n['on'].update({b: b in p['on'] for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp')})
+        if not self.dsp_gate(unit, ch, change):
+            return
         c.update({k: v for k, v in p.items() if k not in ('on', 'track')})
         c['on'].update({b: b in p['on'] for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp')})
         L = self.units[unit]['link']
+        if c.get('amp', 'off') != 'off':                       # a ready-made chain takes the input out of amp mode
+            c['amp'] = 'off'
+            if L:
+                L.set_amp(ch, 'off')
         if L:
             for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp'):
                 L.set_block(ch, b, c['on'][b], dict(c))
@@ -1112,26 +1577,330 @@ class Main(QWidget):
         if unit == self.cur:
             self.strip.show_chan(self.strip.ch)
         self.retitle()
+        self.touch()
 
     def set_amp(self, unit, ch, voice):
         """one amp per box: turning it on here takes it off the box's other inputs in this app's state"""
+        import amp_panel
         u = self.units[unit]
+        if voice != 'off' and u['chans'][ch].get('amp', 'off') == 'off':
+            def change(n):
+                n['amp'] = voice
+                n['on'].update(tube=False, comp=False)
+            if not self.dsp_gate(unit, ch, change):
+                return
         for k, c in enumerate(u['chans']):
             if k != ch and c.get('amp', 'off') != 'off':
                 c['amp'] = 'off'
-                if u['link']:
-                    u['link'].set_amp(k, 'off')
+                self.push_amp(unit, k)
         c = u['chans'][ch]
+        was = c.get('amp', 'off')
         c['amp'] = voice
         if voice != 'off':
             c['on'].update(tube=False, comp=False)
-        if u['link']:
-            u['link'].set_amp(ch, voice)
+            if voice != was:                                  # a channel brings its own gain, presence and master
+                c.update(amp_panel.voice_defaults(voice))
+            c.pop('amp_tweaks', None)                         # a plain channel, not a tone preset any more
+            c.pop('amp_preset', None)
+            c.pop('amp_edited', None)
+        self.push_amp(unit, ch)
         if unit == self.cur:
             self.strip.show_chan(self.strip.ch)
+        self.touch()
+
+    def set_amp_knob(self, unit, ch, key, v):
+        c = self.units[unit]['chans'][ch]
+        if c.get('amp', 'off') == 'off':
+            return
+        if key in ('amp_echo', 'amp_rev', 'amp_gate') and v > 0 and c.get(key, 0) <= 0:
+            if not self.dsp_gate(unit, ch, lambda n: n.__setitem__(key, v)):
+                if unit == self.cur:
+                    self.strip.show_chan(self.strip.ch)        # the knob goes back to OFF
+                return
+        c[key] = v
+        if c.get('amp_preset'):
+            c['amp_edited'] = True
+        if key in ('amp_echo', 'amp_time', 'amp_rev'):
+            self.push_fx(unit, ch)
+        elif key == 'amp_gate':
+            self.push_gate(unit, ch)
+        else:
+            self.push_amp(unit, ch, tone_only=key in ('amp_bass', 'amp_mid'))   # TREBLE moves MASTER too (treble_makeup)
+        if key == 'amp_hard' and unit == self.cur:
+            self.strip.show_chan(self.strip.ch)
+        self.touch()
+
+    def load_amp_preset(self, unit, ch, name):
+        """a tone preset onto one input: voice, knobs, HARD, the amp's insides (one amp per box, as set_amp)"""
+        import amp_presets
+        p = amp_presets.find(name)
+        if not p:
+            return
+        u = self.units[unit]
+        c = u['chans'][ch]
+        if c.get('amp', 'off') == 'off':
+            def change(n):
+                n['amp'] = p['voice']
+                n['on'].update(tube=False, comp=False)
+            if not self.dsp_gate(unit, ch, change):
+                return
+        for k, o in enumerate(u['chans']):
+            if k != ch and o.get('amp', 'off') != 'off':
+                o['amp'] = 'off'
+                self.push_amp(unit, k)
+        amp_presets.apply(c, p)
+        self.push_amp(unit, ch)
+        if unit == self.cur:
+            self.strip.show_chan(self.strip.ch)
+        self.do_log(f'unit {unit + 1} input {ch + 1}: tone {name}')
+        self.touch()
+
+    def save_amp_preset(self, unit, ch, name):
+        import amp_presets
+        c = self.units[unit]['chans'][ch]
+        if c.get('amp', 'off') == 'off':
+            return
+        p = amp_presets.from_chan(c, name)
+        if any(f['name'] == p['name'] for f in amp_presets.FACTORY):
+            p['name'] = (p['name'] + ' (MINE)')[:24]          # factory tones stay as they are
+        user = [u for u in amp_presets.load_user() if u['name'] != p['name']] + [p]
+        try:
+            amp_presets.save_user(user)
+        except OSError as e:
+            self.rec_info.setText('could not save the tone: ' + str(e)[:60])
+            return
+        c['amp_preset'] = p['name']
+        c.pop('amp_edited', None)
+        if unit == self.cur:
+            self.strip.show_chan(self.strip.ch)
+        self.rec_info.setText(f'tone saved: {p["name"]}')
+        self.touch()
+
+    def delete_amp_preset(self, name):
+        import amp_presets
+        user = amp_presets.load_user()
+        keep = [u for u in user if u['name'] != name]
+        if len(keep) != len(user):
+            amp_presets.save_user(keep)
+            self.rec_info.setText(f'tone deleted: {name}')
+
+    def push_gate(self, unit, ch):
+        """in amp mode the amp head's GATE knob runs the input's gate; otherwise the strip's GATE button does"""
+        import amp_panel
+        L = self.units[unit]['link']
+        if not L:
+            return
+        c = self.units[unit]['chans'][ch]
+        if c.get('amp', 'off') != 'off':
+            thr = amp_panel.gate_db(c.get('amp_gate', 0.0))
+            L.set_block(ch, 'gate', thr is not None, dict(c, gate_thr=thr if thr is not None else -45.0))
+        else:
+            L.set_block(ch, 'gate', bool(c['on'].get('gate')), dict(c))
+
+    def push_fx(self, unit, ch):
+        """the box's echo + reverb follow the input's amp: on with it, off with it"""
+        import amp_panel
+        L = self.units[unit]['link']
+        if not L:
+            return
+        c = self.units[unit]['chans'][ch]
+        L.set_fx(ch, amp_panel.fx_params(c) if c.get('amp', 'off') != 'off' else None)
+
+    def push_amp(self, unit, ch, tone_only=False):
+        """send an input's amp: the amp block, and low/peak/high as its BASS/MIDDLE/TREBLE. Amp off: the input's own EQ back."""
+        import amp_panel
+        L = self.units[unit]['link']
+        if not L:
+            return
+        c = self.units[unit]['chans'][ch]
+        voice = c.get('amp', 'off')
+        if voice == 'off':
+            if not tone_only:
+                L.set_amp(ch, 'off')
+                self.push_gate(unit, ch)
+                if not any(o.get('amp', 'off') != 'off' for o in self.units[unit]['chans']):
+                    L.set_fx(ch, None)
+            for b in ('low', 'peak', 'high'):
+                L.set_block(ch, b, c['on'][b], dict(c))
+            return
+        if not tone_only:
+            d = amp_panel.voice_defaults(voice)
+            L.set_amp(ch, voice, amp_panel.amp_db('amp_gain', c.get('amp_gain', d['amp_gain'])),
+                      amp_panel.amp_db('amp_master', c.get('amp_master', d['amp_master'])) + amp_panel.treble_makeup(c),
+                      amp_panel.amp_db('amp_pres', c.get('amp_pres', d['amp_pres'])),
+                      bool(c.get('amp_hard', d['amp_hard'])), c.get('amp_tweaks'))
+        tone = dict(c, **amp_panel.tone_override(c))
+        for b in ('low', 'peak', 'high'):
+            L.set_block(ch, b, True, tone)
+        if not tone_only:
+            self.push_fx(unit, ch)
+            self.push_gate(unit, ch)
+
+    # ---------------- mic compensation (app/mic_comp.py, curves in app/mics/) ----------------
+    def next_mic(self):
+        import mic_comp
+        c = self.units[self.cur]['chans'][self.strip.ch]
+        order = ['off'] + mic_comp.names()
+        if len(order) == 1:
+            self.rec_info.setText('no mic curves yet: add one to app/mics/')
+            return
+        now = c.get('mic', 'off')
+        self.set_mic(self.cur, self.strip.ch, order[(order.index(now) + 1) % len(order)] if now in order else 'off')
+
+    def set_mic(self, unit, ch, name, target=None):
+        """fit the input's low/peak/high to a mic's curve; 'off' puts the EQ back as it was"""
+        import mic_comp
+        keys = mic_comp.KEYS
+        c = self.units[unit]['chans'][ch]
+        if name == 'off':
+            prev = c.pop('mic_prev', None)
+            c.pop('mic', None)
+            if prev:
+                c.update({k: v for k, v in prev.items() if k != 'on'})
+                c['on'].update(prev.get('on', {}))
+            note = 'mic correction off'
+        else:
+            try:
+                r = mic_comp.solve(name, rbj, mag_db, target, FS)
+            except (OSError, ValueError) as e:
+                self.rec_info.setText(f'mic curve {name}: {e}'[:70])
+                return
+            if 'mic_prev' not in c:
+                c['mic_prev'] = {k: c[k] for k in keys}
+                c['mic_prev']['on'] = {b: c['on'][b] for b in ('low', 'peak', 'high')}
+            c.update(r['params'])
+            c['on'].update(low=True, peak=True, high=True)
+            c['mic'] = name
+            note = f'{name.upper()}: {r["was_rms"]:.1f} dB of colour fitted, {r["left_rms"]:.1f} dB left (worst {r["worst"]:.1f})'
+        L = self.units[unit]['link']
+        if L:
+            for b in ('low', 'peak', 'high'):
+                L.set_block(ch, b, c['on'][b], dict(c))
+        if not self.recording:
+            self.rec_info.setText(note)
+        self.do_log(f'mic unit {unit + 1} input {ch + 1}: {note}')
+        if unit == self.cur:
+            self.strip.show_chan(self.strip.ch)
+        self.touch()
+
+    # ---------------- fast-memory A/B (app/octa_fast.py): live only, a power cycle undoes it ----------------
+    def run_bench(self, unit, what='bench'):
+        L = self.units[unit]['link']
+        if self.recording or not L or not L.lab or L.fast_on:
+            self.do_log(f'bench unit {unit + 1}: not now (recording, no link, or the fast path is already on)')
+            return
+
+        def go():
+            import octa_fast
+            from octa_lab import bq_model, q30, rbj as lab_rbj
+            log = lambda s: self.do_log(f'unit {unit + 1}: {s}')
+            L.busy = True
+            try:
+                (octa_fast.profile if what == 'profile' else octa_fast.bench)(L.lab, L.strip, lab_rbj, L.fs, bq_model, q30, log)
+                log(f'{what} finished, back on the normal path')
+            except octa_fast.Refused as e:
+                log(f'bench refused, nothing changed: {e}')
+            except BaseException as e:
+                log(f'bench failed: {e}')
+                raise
+            finally:
+                L.busy = False
+                L.last_ok = time.time()
+                self.bench_done.emit(unit)
+        L.send(('bench', unit), go)
+
+    def toggle_mode(self):
+        unit = self.cur
+        L = self.units[unit]['link']
+        if self.recording or not L or not getattr(L, 'lab', None):
+            self.rec_info.setText('FAT/SLIM needs a connected box, and not during a take')
+            return
+        want = 'fat' if L.mode == 'slim' else 'slim'
+        if want == 'fat':
+            chans = self.units[unit]['chans']
+            extra = self.dspb.model_cycles(chans, False) - self.dspb.model_cycles(chans, True)
+            ok, pred = self.budget.allow(unit, chans, True, extra)
+            if not ok:
+                self.dsp_refused(unit, pred)
+                return
+
+        def go():
+            import octa_fast
+            from octa_lab import bq_model, q30, rbj as lab_rbj
+            try:
+                if want == 'slim' and not L.fast_on:
+                    f = octa_fast.Fast(L.lab, self.do_log)
+                    if f.in_firmware():
+                        self.do_log(f'unit {unit + 1}: fast path already running from the firmware')
+                        L.fast, L.fast_on = f, True
+                        L.mode = want
+                        self.mode_changed.emit(unit, want)
+                        return
+                    f.install()
+                    f.selftest(bq_model, q30, lab_rbj, L.fs, self.do_log)
+                    f.on()
+                    L.fast, L.fast_on = f, True
+                L.mode = want
+                self.mode_changed.emit(unit, want)
+            except octa_fast.Refused as e:
+                self.do_log(f'unit {unit + 1}: SLIM refused, staying FAT: {e}')
+                self.mode_changed.emit(unit, 'refused')
+        L.send(('mode', unit), go)
+
+    def on_mode(self, unit, mode):
+        if mode == 'refused':
+            self.rec_info.setText('SLIM refused: see do.out')
+            return
+        if unit == self.cur:
+            self.mode_btn.setText(mode.upper())
+        L = self.units[unit]['link']
+        for ch, c in enumerate(self.units[unit]['chans']):
+            for b in ('peak', 'high', 'comp'):
+                if c['on'][b]:
+                    L.set_block(ch, b, True, dict(c))
+        self.do_log(f'unit {unit + 1}: mode {mode}')
+        if not self.recording:
+            self.rec_info.setText(f'UNIT {unit + 1}: {mode.upper()} mode')
+
+    def run_probe(self, unit, name, args):
+        L = self.units[unit]['link']
+        if self.recording or not L or not L.lab:
+            self.do_log(f'probe unit {unit + 1}: not now')
+            return
+
+        def go():
+            import importlib
+            log = lambda s: self.do_log(f'unit {unit + 1}: {s}')
+            try:
+                import octa_probe
+                importlib.reload(octa_probe)
+            except Exception as e:                        # a broken probe file must say so, not vanish
+                log(f'probe file does not load: {e}')
+                return
+            L.busy = True
+            touched = True
+            try:
+                touched = getattr(octa_probe, name)(L.lab, L.strip, log, *args)
+            except BaseException as e:
+                log(f'probe {name} failed: {e}')
+                if not isinstance(e, Exception):
+                    raise
+            finally:
+                L.busy = False
+                L.last_ok = time.time()
+                if touched:
+                    self.bench_done.emit(unit)
+        L.send(('probe', unit, name), go)
+
+    def after_bench(self, unit):
+        self.restore_unit(unit)
+        self.do_log(f'unit {unit + 1}: your chains are back after the bench')
 
     def do_log(self, s):
-        with open(os.path.join(HERE, 'do.out'), 'a', encoding='utf-8') as f:
+        import threading
+        lock = self.__dict__.setdefault('_log_lock', threading.Lock())   # two box threads write here: keep lines whole
+        name = 'do.out' if self.setup_path else 'do_demo.out'                # a demo doesn't write in the real app's log
+        with lock, open(os.path.join(HERE, name), 'a', encoding='utf-8') as f:
             f.write(s + '\n')
 
     def poll_do(self):
@@ -1179,12 +1948,57 @@ class Main(QWidget):
             elif a[:1] == ['rec']:                                   # same as tapping the red button
                 self.toggle_rec()
                 self.do_log(f'rec -> recording={self.recording} {self.take_dir}')
-            elif a[:1] == ['amp'] and len(a) == 4:                   # amp <unit> <input> <off|clean|crunch|lead|cranked>
+            elif a[:1] == ['set'] and len(a) == 5:                  # set <unit> <input> <key> <value>: one strip knob, saved
+                u, ch, key, v = int(a[1]) - 1, int(a[2]) - 1, a[3], float(a[4])
+                c = self.units[u]['chans'][ch]
+                lo, hi = self.setup.RANGES.get(key, (None, None))
+                if key in KEY_BLOCK and lo is not None:
+                    c[key] = min(hi, max(lo, v))
+                    L = self.units[u]['link']
+                    if L and c['on'][KEY_BLOCK[key]]:
+                        L.set_block(ch, KEY_BLOCK[key], True, dict(c))
+                    if u == self.cur and ch == self.strip.ch:
+                        self.strip.show_chan(ch)
+                    self.touch()
+                    self.do_log(f'ok {ln} -> {c[key]}')
+                else:
+                    self.do_log(f'set: unknown key {key}')
+            elif a[:1] == ['tone'] and len(a) >= 4:                # tone <unit> <input> <PRESET NAME>
+                self.load_amp_preset(int(a[1]) - 1, int(a[2]) - 1, ' '.join(a[3:]).upper())
+            elif a[:1] == ['amp'] and len(a) == 4:                   # amp <unit> <input> <off|clean|crunch|lead|cranked|fuzz>
                 self.set_amp(int(a[1]) - 1, int(a[2]) - 1, a[3])
                 self.do_log('ok ' + ln)
             elif a[:1] == ['mon'] and len(a) == 2 and self.engine:
                 self.mon.setChecked(a[1] == '1')
                 self.do_log('ok ' + ln)
+            elif a[:1] == ['mic'] and len(a) in (4, 5):               # mic <unit> <input> <name|off> [target mic]
+                self.set_mic(int(a[1]) - 1, int(a[2]) - 1, a[3], a[4] if len(a) == 5 else None)
+            elif a[:1] == ['bench'] and len(a) == 2:                  # bench <unit>: fast-memory load test, ramps and stops itself
+                self.run_bench(int(a[1]) - 1)
+            elif a[:1] == ['probe'] and len(a) >= 3:                  # probe <unit> <experiment> [args]: app/octa_probe.py
+                self.run_probe(int(a[1]) - 1, a[2], a[3:])
+            elif a[:1] == ['profile'] and len(a) == 2:                # profile <unit>: cycles per block, old path / FAT / SLIM
+                self.run_bench(int(a[1]) - 1, 'profile')
+            elif a[:1] == ['stream']:                                 # stream status | stream send <unit> <input> | stream route <name>|<device>
+                if a[1:2] == ['send'] and len(a) == 4:
+                    keep = self.cur
+                    self.cur = int(a[2]) - 1
+                    self.toggle_send(int(a[3]) - 1)
+                    self.cur = keep
+                    self.refresh_stream_marks()
+                elif a[1:2] == ['route']:
+                    nm, _, dv = ' '.join(a[2:]).partition('|')
+                    self.set_stream_route(nm, dv)
+                st = self.stream()
+                self.do_log(f'stream: {st["name"]} -> "{st["device"]}", sends {st["sends"]}, engine device {self.feed_dev}, '
+                            f'last: {self.feed_last}')
+            elif a[:1] == ['setup']:                                  # what would come back after a power cut
+                for i, u in enumerate(self.units):
+                    on = [k + 1 for k, c in enumerate(u['chans'])
+                          if any(c['on'][b] for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp'))]
+                    g = {k + 1: c['pre_gain'] for k, c in enumerate(u['chans']) if c.get('gain_known')}
+                    self.do_log(f'unit {i + 1}: strips on {on}, gains {g}, routes {self.rig["patchbay"].get(str(i), {})}')
+                self.do_log('focusrite: ' + (self.fc.status if self.fc else 'not kept'))
             elif a[:1] == ['state'] and len(a) == 2:
                 self.do_state(int(a[1]) - 1)
             elif a[:1] == ['dt1'] and len(a) == 4:                    # dt1 <unit> <addr hex, 4 bytes> <data hex>
@@ -1252,15 +2066,56 @@ class Main(QWidget):
         mins = free / (self.usb_rate * 3 * 20) / 60
         return f'{free / 1e9:.1f} GB free, about {mins:.0f} min of 20 tracks'
 
-    def on_engine_ready(self, boxes, rate):
+    def map_boxes(self, serials):
+        """engine box -> unit, by USB serial. A box we can't place is None: it is left completely alone."""
+        known = self.rig.setdefault('serials', {})
+        if not serials:                                       # old engine without serials: only a full pair is certain
+            return [0, 1][:len(serials) or self.usb_boxes] if self.usb_boxes == 2 else [None] * self.usb_boxes
+        units = [known.get(s) for s in serials]
+        free = [u for u in (0, 1) if u not in units]
+        unknown = [i for i, u in enumerate(units) if u is None]
+        if len(serials) == 2 and len(unknown) == 2:          # first time with both on: they come sorted by serial
+            units = [0, 1]
+        elif len(serials) == 2 and len(unknown) == 1 and len(free) == 1:
+            units[unknown[0]] = free[0]                       # a new box next to a known one takes the free place
+        else:
+            return units
+        for s, u in zip(serials, units):
+            if known.get(s) != u:
+                for old in [k for k, v in known.items() if v == u]:   # one serial per unit: a swapped-in box replaces the old one
+                    del known[old]
+                known[s] = u
+                self.do_log(f'box {s} is unit {u + 1} from now on')
+        self.save_setup()
+        return units
+
+    def unit_of(self, box):
+        return self.box_unit[box] if 0 <= box < len(self.box_unit) and self.box_unit[box] is not None else -1
+
+    def trusted(self, k):
+        """on our USB engine, only boxes placed by serial; on Roland's driver there's nothing to mix up"""
+        return not self.usb_rate or k in self.unit_ok
+
+    def on_engine_ready(self, boxes, rate, serials=()):
         self.usb_rate, self.usb_boxes = rate, boxes
+        self.engine_dead = self.engine_nobox = False
+        self.engine_backoff = 10.0
+        self.box_unit = self.map_boxes(list(serials))
+        self.unit_ok = {u for u in self.box_unit if u is not None}
         for i, u in enumerate(self.units):            # the lab + Roland messages now go through the USB engine
             if not u['link']:
                 continue
-            if i < boxes:
-                u['link'].transport = (lambda k=i: self.engine.ports(k))
+            if i in self.unit_ok:
+                u['link'].transport = (lambda k=self.box_unit.index(i): self.engine.ports(k))
+                u['link'].paused = False
+                u['link'].last_ok = time.time()
             else:
-                u['link'].stop = True
+                u['link'].paused = True
+        self.feed_dev = None                          # a new engine starts with nothing sending
+        self.apply_stream()
+        for b, u in enumerate(self.box_unit):
+            if u is None:
+                self.do_log(f'box {list(serials)[b] if b < len(serials) else b + 1}: not sure which unit this is, left alone')
         os.makedirs(RECORDINGS, exist_ok=True)
         self.header.units.clear()
         self.header.set_status(f'USB DIRECT   {boxes} box{"es" if boxes > 1 else ""}   {rate / 1000:g} kHz', True)
@@ -1298,7 +2153,8 @@ class Main(QWidget):
         if inp > 8:
             base = f'box{box} digital {"L" if inp == 9 else "R"}'
         else:
-            t = load_tracks(box - 1)[inp - 1].get('name', '').strip()
+            u = self.unit_of(box - 1)
+            t = load_tracks(u if u >= 0 else box - 1)[inp - 1].get('name', '').strip()
             base = ''.join(ch for ch in t if ch.isalnum() or ch in ' -_').strip() or f'box{box} in{inp:02d}'
         name, k = base + '.wav', 2
         while os.path.exists(os.path.join(self.take_dir, name)):
@@ -1347,19 +2203,149 @@ class Main(QWidget):
         self.strip.chans = u['chans']
         self.strip.link = u['link']
         self.rail.set_unit(k)
+        self.refresh_stream_marks()
         self.strip.show_chan(self.strip.ch)
+        self.mode_btn.setText(getattr(u['link'], 'mode', 'fat').upper())
         for m in self.rail.meters:
             m.level = 0
             m.update()
 
     def on_flags(self, k, fl):
+        if not self.trusted(k):                               # never read a box we can't name into your settings, or back
+            self.do_log(f'unit {k + 1}: not sure which box this is, left alone')
+            return
+        self.apply_routes(k)
+        if self.has_saved and not any(fl):                    # empty strip = fresh power-up
+            self.restore_unit(k)
+            if k == self.cur:
+                self.strip.show_chan(self.strip.ch)
+            return
         for ch, on in enumerate(fl):
+            amp = self.units[k]['chans'][ch].get('amp', 'off') != 'off'
             for b in ('hpf', 'low', 'peak', 'high', 'tube', 'comp'):
+                if amp and b in ('low', 'peak', 'high'):          # those are the amp's BASS/MIDDLE/TREBLE now, not your EQ
+                    continue
                 self.units[k]['chans'][ch]['on'][b] = b in on
         if k == self.cur:
             self.strip.show_chan(self.strip.ch)
 
+    def on_mon(self, on):
+        """MONITOR OTHER BOX: the other box's inputs in this box's outputs, over USB. Saved, so a restart keeps it
+        (2026-11-11: restarts switched it off and the mic went missing from the monitors)"""
+        if self.engine:
+            self.engine.monitor(on)
+        if bool(self.rig.get('monitor')) != on:
+            self.rig['monitor'] = on
+            self.touch()
+
+    def on_unit_preamp(self, k, ch, raw, ph, hiz=-1):
+        """a box's preamp as read from it: the shown box goes through the page; the other one is saved too, or its gain
+        is lost at the next power cut (2026-11-11: unit 2's 44 dB came back as 0)"""
+        if k == self.cur:
+            self.strip.on_preamp(ch, raw, ph, hiz)
+            return
+        c = self.units[k]['chans'][ch]
+        changed = c.get('pre_gain') != raw / 2 or not c.get('gain_known')
+        c['pre_gain'], c['gain_known'], c['ph48'] = raw / 2, True, bool(ph)
+        if hiz >= 0 and c.get('hiz') != bool(hiz):
+            c['hiz'] = bool(hiz)
+            changed = True
+        if changed:
+            self.touch()
+
+    # ---------------- DSP budget ----------------
+    def dsp_slim(self, unit):
+        L = self.units[unit]['link']
+        return getattr(L, 'mode', 'fat') == 'slim'
+
+    def dsp_now(self, unit):
+        return self.budget.now(unit, self.units[unit]['chans'], self.dsp_slim(unit))
+
+    def dsp_gate(self, unit, ch, change):
+        """may this change to an input be made? No = the bar says so and the task manager opens"""
+        c = self.units[unit]['chans'][ch]
+        slim = self.dsp_slim(unit)
+        delta = self.dspb.delta_for(c, change, slim)
+        ok, pred = self.budget.allow(unit, self.units[unit]['chans'], slim, delta)
+        if not ok:
+            self.dsp_refused(unit, pred)
+        return ok
+
+    def dsp_refused(self, unit, pred):
+        if unit != self.cur:
+            self.select_unit(unit)
+        self.dsp_bar.refuse(pred)
+        self.rec_info.setText(f'DSP FULL on unit {unit + 1}: that would be {pred:.0f} %. Remove something.')
+        self.do_log(f'unit {unit + 1}: refused, DSP would be {pred:.1f} % (limit {self.dspb.LIMIT:.0f})')
+        self.show_dsp_tasks()
+
+    def refresh_dsp(self):
+        pct, live = self.dsp_now(self.cur)
+        self.dsp_bar.set_load(pct, live, self.cur)
+        ok = getattr(self.units[self.cur]['link'], 'fx_ok', None)
+        if self.strip.amp_head.fx_ok != ok:
+            self.strip.amp_head.fx_ok = ok
+            for key in ('amp_gate', 'amp_echo', 'amp_time', 'amp_rev'):   # knobs that do nothing on this box: gone
+                self.strip.amp_head.knobs[key].setVisible(ok is not False)
+            self.strip.amp_head.update()
+
+    def show_dsp_tasks(self):
+        if self.dsp_win is None:
+            self.dsp_win = self.dspb.DspTasks(self)
+        self.dsp_win.show()
+        self.dsp_win.rebuild()
+        self.dsp_win.raise_()
+
+    def dsp_tasks(self, unit):
+        """[(ch, block, who, cycles, what)] for the task manager"""
+        tracks = load_tracks(unit)
+        slim = self.dsp_slim(unit)
+        out = []
+        for ch, c in enumerate(self.units[unit]['chans']):
+            name = (tracks[ch].get('name') or '').upper()
+            who = f'IN {ch + 1}' + (f'  {name}' if name else '')
+            for block, cyc in self.dspb.tasks(c, slim):
+                if block == 'input':
+                    continue
+                what = self.dspb.NAMES[block] + (f' · {c["amp"].upper()}' if block == 'amp' else '')
+                out.append((ch, block, who, cyc + (self.dspb.COST['input'] if len(self.dspb.tasks(c, slim)) == 2 else 0), what))
+        return out
+
+    def dsp_kill(self, unit, ch, block):
+        """the task manager's X: that block off now, same as its button"""
+        c = self.units[unit]['chans'][ch]
+        if block == 'amp':
+            self.set_amp(unit, ch, 'off')
+        elif block in ('echo', 'reverb'):                       # the amp's FX knob to OFF
+            c['amp_echo' if block == 'echo' else 'amp_rev'] = 0.0
+            self.push_fx(unit, ch)
+            if unit == self.cur:
+                self.strip.show_chan(self.strip.ch)
+            self.touch()
+        elif block == 'gate' and c.get('amp', 'off') != 'off':  # the amp head's GATE knob to OFF
+            c['amp_gate'] = 0.0
+            self.push_gate(unit, ch)
+            if unit == self.cur:
+                self.strip.show_chan(self.strip.ch)
+            self.touch()
+        else:
+            c['on'][block] = False
+            L = self.units[unit]['link']
+            if L:
+                L.set_block(ch, block, False, dict(c))
+            if unit == self.cur:
+                self.strip.show_chan(self.strip.ch)
+            self.touch()
+        self.do_log(f'unit {unit + 1}: DSP task killed: input {ch + 1} {block}')
+        self.refresh_dsp()
+        if self.dsp_win and self.dsp_win.isVisible():
+            QTimer.singleShot(0, self.dsp_win.rebuild)
+
     def retitle(self):
+        self.strip.track_name = self.rail.label(self.strip.ch)
+        if not self.strip.amp_head.isHidden():
+            self.strip.amp_head.name = self.strip.track_name
+            self.strip.amp_head.update()
         self.strip.eqp.title = f'EQ   ·   UNIT {self.cur + 1}   ·   ' + self.rail.label(self.strip.ch)
         self.strip.eqp.update()
 
@@ -1373,6 +2359,12 @@ class Main(QWidget):
         self.strip.inlab.setText('IN  %s' % ('%.1f dB' % d if d > -100 else '--'))
 
     def closeEvent(self, e):
+        self.closing = True
+        if self.save_timer.isActive():
+            self.save_timer.stop()
+            self.save_setup()
+        if self.fc:
+            self.fc.stop = True
         for u in self.units:
             if u['link']:
                 u['link'].stop = True
@@ -1391,6 +2383,16 @@ class Main(QWidget):
             m.update()
         self.strip.gr.level = max(0.0, 0.3 + 0.2 * math.sin(self.t * 0.2))
         self.strip.gr.update()
+
+
+def playback_devices():
+    """names of Windows playback devices (WASAPI), for the stream settings list; empty if they can't be listed"""
+    try:
+        import sounddevice as sd
+        apis = [i for i, h in enumerate(sd.query_hostapis()) if 'WASAPI' in h['name']]
+        return sorted({d['name'] for d in sd.query_devices() if d['max_output_channels'] > 0 and d['hostapi'] in apis})
+    except Exception:
+        return []
 
 
 def main():

@@ -19,6 +19,9 @@ typedef unsigned char u8;
 
 #define VARS 0x41d5e4u
 extern u32 strip_addr(void);    /* strip.c: the channel strip block (L1 data) */
+extern u32 scene_addr(void);    /* scene.c: the scene control block */
+extern u32 fx_addr(void);       /* strip.c: the echo + reverb block */
+extern u32 gate_addr(void);     /* strip.c: the noise gate block */
 #define RXMAX 320
 #define TXMAX 320
 
@@ -228,6 +231,9 @@ static void exec(void)
         put32(VARS);
         put32(UPLOAD_BASE);
         put32(strip_addr());                            /* lab >= 1.3 */
+        put32(scene_addr());                            /* lab >= 1.8: scene control block (scene.h) */
+        put32(fx_addr());                               /* lab >= 1.8: echo + reverb block (strip.h struct fx) */
+        put32(gate_addr());                             /* lab >= 1.8: noise gate block (strip.h struct gate) */
         run = 0;
         break;
     case 2: case 3:                                     /* PEEK / POKE */
