@@ -21,8 +21,8 @@ import time
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QLinearGradient, QPainter, QPainterPath, QPen,
                            QIcon, QKeySequence, QPixmap, QPolygonF, QRadialGradient, QShortcut)
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+                               QLineEdit, QMenu, QPushButton, QScrollArea, QScroller, QSizePolicy, QVBoxLayout, QWidget)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ART = os.path.join(HERE, '..', 'art', 'app')
@@ -1178,9 +1178,9 @@ class StripPage(QWidget):
 
 
 class PatchBrowser(QDialog):
-    """every patch for the shown input: four big group tabs (MIC e935, GUITAR DI, GUITAR AMP tones, YOURS), each a
-    4-wide grid of finger-sized keys. One tap loads it straight away and the window stays open, so you can tap
-    through them while you play."""
+    """every patch for the shown input: big group tabs (MIC e935, SINGERS, GUITAR DI, GUITAR AMP tones, YOURS), each a
+    4-wide grid of finger-sized keys that scrolls (drag or wheel). One tap loads it straight away and the window stays
+    open, so you can tap through them while you play."""
     COLS = (('MIC', 'MIC  ·  e935'), ('SINGER', 'SINGERS'), ('GUITAR', 'GUITAR  ·  DI'), ('AMP', 'GUITAR  ·  AMP'),
             ('USER', 'YOURS'))
     WIDE = 4
@@ -1228,12 +1228,25 @@ class PatchBrowser(QDialog):
             self.tabs[key] = t
         root.addLayout(tabs)
         for key, _ in self.COLS:
-            page = QWidget()
-            g = QGridLayout(page)
-            g.setContentsMargins(0, 4, 0, 0)
+            inner = QWidget()
+            inner.setObjectName('inner')
+            inner.setStyleSheet('QWidget#inner{background:#0c0d0f;}')   # only the page, not its keys
+            g = QGridLayout(inner)
+            g.setContentsMargins(0, 4, 6, 0)
             g.setSpacing(6)
             for i in range(self.WIDE):
                 g.setColumnStretch(i, 1)
+            page = QScrollArea()                               # 50+ keys on a tab: drag (touch) or wheel to scroll
+            page.setWidget(inner)
+            page.setWidgetResizable(True)
+            page.setFrameShape(QFrame.NoFrame)
+            page.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            page.verticalScrollBar().setStyleSheet(
+                'QScrollBar:vertical{background:#16181b;width:22px;border-radius:4px;}'
+                'QScrollBar::handle:vertical{background:#4a4f55;min-height:60px;border-radius:4px;}'
+                'QScrollBar::add-line,QScrollBar::sub-line{height:0px;}'
+                'QScrollBar::add-page,QScrollBar::sub-page{background:#16181b;}')   # plain track, no hatching
+            QScroller.grabGesture(page.viewport(), QScroller.TouchGesture)
             root.addWidget(page, 1)
             self.pages[key], self.col[key] = page, g
         self.show_tab('MIC')
@@ -1271,6 +1284,8 @@ class PatchBrowser(QDialog):
         for col, name, *_ in self.items():
             if name == cur:
                 self.show_tab(col)
+                if name in self.btns:                          # scrolled to it once the window has its size
+                    QTimer.singleShot(0, lambda p=self.pages[col], b=self.btns[name]: p.ensureWidgetVisible(b, 0, 40))
                 return
         self.show_tab('AMP' if self.chan().get('amp', 'off') != 'off' else ('GUITAR' if self.win.cur == 0 else 'MIC'))
 
@@ -1308,7 +1323,7 @@ class PatchBrowser(QDialog):
         self.btns, self.notes, self.mine = {}, {}, set()
         n = dict.fromkeys(self.col, 0)
         for col, name, note, fx, mine in items:
-            b = QPushButton(name + ('   + ' + fx if fx and col in ('MIC', 'SINGER', 'GUITAR') else ''))
+            b = QPushButton(name + ('\n+ ' + fx if fx and col in ('MIC', 'SINGER', 'GUITAR') else ''))   # tag on line 2: 4 keys fit
             b.setCheckable(True)
             b.setMinimumHeight(TOUCH_H + 4)
             b.setToolTip(note)

@@ -69,21 +69,35 @@ def tap(name):
     """like a finger: open the group's tab, then press the key"""
     QTest.mouseClick(pb.tabs[tab_of(name)], Qt.LeftButton)
     app.processEvents()
+    pb.pages[tab_of(name)].ensureWidgetVisible(pb.btns[name])          # scroll to it, like a finger drag
+    app.processEvents()
     QTest.mouseClick(pb.btns[name], Qt.LeftButton)
     app.processEvents()
 
 
 check('opens on the MIC tab for unit 2', pb.tab == 'MIC' and pb.pages['MIC'].isVisible() and not pb.pages['AMP'].isVisible())
-check('20+ new in each group', sum(c == 'MIC' for c, *_ in pb.items()) >= 29 and sum(c == 'GUITAR' for c, *_ in pb.items()) >= 26
-      and sum(c == 'AMP' for c, *_ in pb.items()) >= 30)
-clipped = []
+check('50+ in MIC, GUITAR and AMP', sum(c == 'MIC' for c, *_ in pb.items()) >= 50 and sum(c == 'GUITAR' for c, *_ in pb.items()) >= 50
+      and sum(c == 'AMP' for c, *_ in pb.items()) >= 50)
+clipped, scrolls = [], []
 for key in pb.pages:
     QTest.mouseClick(pb.tabs[key], Qt.LeftButton)
     app.processEvents()
+    sa = pb.pages[key]
+    if sa.verticalScrollBar().maximum() > 0:
+        scrolls.append(key)
     for n, b in pb.btns.items():
-        if tab_of(n) == key and (not b.isVisible() or b.geometry().bottom() > pb.pages[key].height() or b.height() < 40):
+        if tab_of(n) != key:
+            continue
+        sa.ensureWidgetVisible(b)
+        app.processEvents()
+        top = b.mapTo(sa.viewport(), b.rect().topLeft())
+        bot = b.mapTo(sa.viewport(), b.rect().bottomRight())
+        if not b.isVisible() or top.y() < 0 or bot.y() > sa.viewport().height() or bot.x() > sa.viewport().width() or b.height() < 40:
             clipped.append(n)
-check('every key on every tab visible, not clipped, finger-sized', not clipped, clipped)
+    sa.verticalScrollBar().setValue(0)
+check('every key on every tab reachable by scrolling, whole and finger-sized', not clipped, clipped)
+check('big tabs scroll, no sideways scroll', {'MIC', 'GUITAR', 'AMP'} <= set(scrolls)
+      and all(pb.pages[k].horizontalScrollBar().maximum() == 0 for k in pb.pages), scrolls)
 L = w.units[1]['link']
 L.calls.clear()
 tap('SCREAM')
