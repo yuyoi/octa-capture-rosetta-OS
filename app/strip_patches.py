@@ -271,6 +271,113 @@ FACTORY = [
       'ear: a full low-mid croon, light comp, short plate and a touch of slap. A guess, not a recipe.',
       track=VOX, fx=vfx(110, 0.1, 0.18, 3500, rev=0.18, size=0.5, damp=0.4), **eq(70, (160, 2.0), (3000, -1.0, 1.0), (9000, 1.0)),
       **tube(7.0, 0.25), **comp(-20, 3.0, 15, 200, 3.0)),
+    P('COBAIN NEVERMIND', 'SINGER', ALL, 'On record (Butch Vig): a Neumann U67 into an LA-2A, "a fair amount of compression" to control '
+      'his dynamics, maybe a Pultec for a little top; choruses doubled; the mix had "tight slap echo, almost a double" and a little '
+      'reverb, mostly dry. Here: U67-ish mids and top, opto-style comp, a 30 ms double, a hint of room.',
+      track=VOX, fx=vfx(30, 0.0, 0.4, 6000, rev=0.08, size=0.4, damp=0.5), **eq(90, (220, 0.5), (3000, 1.0, 1.0), (10000, 2.0)),
+      **tube(6.0, 0.25), **comp(-28, 4.0, 10, 300, 8.0)),
+    P('COBAIN IN UTERO', 'SINGER', ALL, 'On record (Steve Albini): an EV PL20 and a LOMO tube condenser, NOT double-tracked, mostly '
+      'first takes, sung in a resonant room; compression only now and then. Here: raw and loud, a little tube grit, light comp, a '
+      'live-sounding room, no double.',
+      track=VOX, fx=vfx(rev=0.22, size=0.45, damp=0.3), **eq(80, (200, 0.0), (3500, 1.5, 1.0), (9000, 1.0)), **tube(10.0, 0.30),
+      **comp(-18, 3.0, 5, 150, 3.0)),
+    P('VEDDER TEN', 'SINGER', ALL, 'On record (Mix): a U87 into a Neve 1081, a UREI 1178 and an ADR Vocal Stressor; Tim Palmer mixed '
+      'with EMT plates, a Lexicon 224 and delays, and the band later said it was too much. Here: condenser top, Neve warmth, fast '
+      '1178-style 4:1, a plate and a 180 ms echo (the time is a guess).',
+      track=VOX, fx=vfx(180, 0.25, 0.15, 3500, rev=0.28, size=0.65, damp=0.3), **eq(90, (200, 1.0), (3000, 1.0, 1.0), (10000, 2.5)),
+      **tube(6.0, 0.25), **comp(-26, 4.0, 1, 100, 7.0)),
+    P('REZNOR CLEAN', 'SINGER', ALL, 'On record (Sean Beavan, The Downward Spiral): a handheld Shure Beta 58 through a Neve and an '
+      'LA-2A, one solid take, no chorus, no pitch-shift. The e935 is a close cousin of the Beta 58, so the EQ stays nearly flat. '
+      'Neve warmth, opto-style comp, dry.',
+      track=VOX, **eq(100, (200, -1.0), (4500, 0.0, 1.0), (10000, 1.0)), **tube(5.0, 0.20), **comp(-26, 4.0, 10, 300, 7.0)),
+    P('REZNOR DISTORTED', 'SINGER', ALL, 'On record: a Neve 1073 driven into a UREI LA-3, a gate and more LA-3s "all the way up" '
+      '(Beavan); Reznor: the Neve pre and a Zoom 9030 on "all the vocals", blended so the words stay clear. Here: tube flat out, '
+      'crushed 12:1, gate on. Back the preamp off if the words smear.',
+      gate=-45.0, track=VOX, **eq(150, (200, 0.0), (1600, 3.0, 0.9), (7000, -4.0)), **tube(24.0, 0.45),
+      **comp(-40, 12.0, 0.5, 80, 12.0)),
+    P('SERJ TOXICITY', 'SINGER', ALL, 'On record (David Schiffman, Mix 2001): a Shure SM7 for the aggressive vocals ("doesn\'t fold or '
+      'buckle"), Neve 1073 pres on everything; no vocal compressor named. Here: SM7-dark top, 1073 warmth, 4:1 by reasoning. Gate on.',
+      gate=-50.0, track=VOX, **eq(100, (200, 0.5), (3000, 1.5, 1.0), (7000, -2.5)), **tube(8.0, 0.25), **comp(-22, 4.0, 3, 100, 5.0)),
+    P('SERJ SOFT', 'SINGER', ALL, 'On record (Schiffman): an AKG C12 for the delicate vocals, through the Neve 1073s. Here: tube-condenser '
+      'air on the e935, proximity held down, gentle comp; the small room is a guess.',
+      track=VOX, fx=vfx(rev=0.12, size=0.5, damp=0.4), **eq(100, (200, -2.0), (3000, 0.5, 1.0), (11000, 3.0)), **tube(5.0, 0.20),
+      **comp(-24, 3.0, 10, 200, 5.0)),
+    P('CANTRELL HARMONY', 'SINGER', ALL, 'On record (Dave Jerden): all of Jerry\'s vocals doubled, Layne\'s tripled, the stacks sung to a '
+      'finished lead; Jerry\'s mic is not on record. Here: a harmony voice a bit thinner than the lead so the two blend, a 28 ms double. '
+      'Pair it with STALEY DIRT on the other mic.',
+      track=VOX, fx=vfx(28, 0.0, 0.45, 6000), **eq(120, (250, -1.5), (2500, 1.5, 1.0), (9000, 1.5)), **tube(5.0, 0.20),
+      **comp(-24, 4.0, 8, 200, 5.0)),
+    P('ELVIS SUN', 'SINGER', ALL, 'On record: Sam Phillips\' slapback was a second Ampex 350 fed back through the board, measured at '
+      '134-137 ms (Halmrast 2017); RCA ribbon and dynamic mics, a homemade compressor with very little limiting, no EQ, everything '
+      'pushed to "the edge of distortion". Here: ribbon-dark top, hot tube, barely any comp, one 135 ms slap.',
+      track=VOX, fx=vfx(135, 0.0, 0.35, 3000, rev=0.06, size=0.3, damp=0.5), **eq(80, (150, 1.5), (1500, 1.5, 0.8), (7000, -4.0)),
+      **tube(12.0, 0.30), **comp(-16, 2.0, 10, 200, 2.0)),
+    P('LENNON ADT', 'SINGER', ALL, 'On record (Abbey Road): ADT = a second tape machine set 8-12 ms behind or ahead of the voice, built '
+      'for Lennon in 1966; a U47 and a Fairchild 660 on his vocal (one magazine, search excerpt only). Here: U47-ish warmth, '
+      'Fairchild-style slow 4:1, a 10 ms copy (it doesn\'t wobble like the real ADT).',
+      track=VOX, fx=vfx(10, 0.0, 0.45, 8000), **eq(80, (200, 1.0), (3000, 0.5, 1.0), (10000, 1.5)), **tube(8.0, 0.30),
+      **comp(-26, 4.0, 5, 300, 7.0)),
+    P('LENNON TAPE ECHO', 'SINGER', ALL, 'On record (Geoff Emerick, A Day in the Life): John\'s mic fed a tape machine turned up until it '
+      'fed back, a "twittery" echo he heard in his headphones while singing; for Instant Karma he asked Spector for "1950s". The echo '
+      'time is not on record: 110 ms with feedback here, darkened like tape.',
+      track=VOX, fx=vfx(110, 0.45, 0.3, 3000), **eq(100, (200, 0.0), (1800, 2.0, 0.9), (8000, -2.0)), **tube(10.0, 0.30),
+      **comp(-24, 4.0, 5, 300, 6.0)),
+    P('IAN CURTIS', 'SINGER', ALL, 'On record (mostly secondhand): Martin Hannett ran the voice "down a telephone line" on Insight for '
+      'distance, and AMS DMX 15-80 digital delays on She\'s Lost Control; one-take vocals. Here: the deep baritone kept, a bright '
+      'digital-style 320 ms echo and a cold plate; times and amounts are guesses. For the phone line try TELEPHONE.',
+      track=VOX, fx=vfx(320, 0.3, 0.2, 9000, rev=0.25, size=0.7, damp=0.3), **eq(80, (160, 2.0), (2500, -1.0, 0.9), (8000, -1.5)),
+      **tube(6.0, 0.25), **comp(-22, 3.0, 10, 200, 3.0)),
+    P('CHINO', 'SINGER', ALL, 'On record (Terry Date): his habit is a 58 through two 1176s; for Chino on Ohms (2020, not White Pony) a '
+      'RAT "just a little bit" and an Echorec-style slap. White Pony\'s own chain is not on record. Here: two-1176-style hard comp, a '
+      'little tube dirt, a 110 ms slap (time guessed).',
+      track=VOX, fx=vfx(110, 0.1, 0.25, 3500, rev=0.12, size=0.5, damp=0.4), **eq(110, (220, -1.0), (3000, 1.5, 1.0), (9000, 1.0)),
+      **tube(10.0, 0.35), **comp(-30, 8.0, 1, 80, 9.0)),
+    P('HOMME LULLABIES', 'SINGER', ALL, 'On record (Joe Barresi, Lullabies to Paralyze 2005, not Rated R or Songs for the Deaf): "The '
+      '1176 is my favourite on vocals", compressed going to tape, often 2-3 mics with one slightly overdriven, dry lead vocals. Here: '
+      'fast 1176-style 4:1, tube drive standing in for the dirty second mic, dry.',
+      track=VOX, **eq(100, (200, 0.0), (2000, 1.5, 1.0), (9000, 1.5)), **tube(12.0, 0.30), **comp(-26, 4.0, 1, 100, 6.0)),
+    P('WEILAND PICKUP', 'SINGER', ('hpf', 'peak', 'high', 'tube', 'comp'), 'On record (Dean DeLeo): for the Dead & Bloated intro Scott '
+      'sang into the bridge pickup of Dean\'s Les Paul. How it sounded through the desk is not on record: here a narrow, honky, driven '
+      'band like a pickup used as a mic.',
+      track=VOX, **eq(350, (200, 0.0), (1200, 6.0, 1.2), (3000, -12.0)), **tube(18.0, 0.45), **comp(-24, 6.0, 3, 80, 4.0)),
+    P('WEILAND CORE', 'SINGER', ALL, 'On record (Brendan O\'Brien): STP got "more echo, more trippy, more psychedelic" vocals; his usual '
+      'chain is a Neve and an LA-2A or a Tube-Tech. Mic and settings are not on record: here Neve-style warmth, opto comp, a 280 ms '
+      'echo and a plate (guessed).',
+      track=VOX, fx=vfx(280, 0.35, 0.2, 3500, rev=0.25, size=0.7, damp=0.4), **eq(100, (220, 0.0), (2500, 1.5, 1.0), (10000, 2.0)),
+      **tube(6.0, 0.25), **comp(-24, 4.0, 10, 300, 6.0)),
+    P('LEMMY', 'SINGER', ALL, 'Nothing on record for the Ace of Spades vocal chain (Vic Maile "got me singing instead of just shouting"); '
+      'the mic-above stance is a live habit. By ear: gravel, a 1.5 kHz push, tube grit, a short slap. Gate on. A guess, not a recipe.',
+      gate=-48.0, track=VOX, fx=vfx(120, 0.05, 0.15, 3000), **eq(150, (250, -2.0), (1500, 3.0, 0.9), (7000, -2.0)),
+      **tube(14.0, 0.35), **comp(-22, 6.0, 3, 80, 5.0)),
+    P('LANEGAN', 'SINGER', ALL, 'Nothing on record for his chain on Sweet Oblivion or with QOTSA. By ear: the deep smoky baritone, chest '
+      'up, the top darkened, warm tube, a dark room. A guess, not a recipe.',
+      track=VOX, fx=vfx(rev=0.18, size=0.55, damp=0.6), **eq(70, (150, 2.5), (2500, -1.0, 0.8), (8000, -2.0)), **tube(8.0, 0.30),
+      **comp(-24, 4.0, 10, 250, 5.0)),
+    P('KORN DAVIS', 'SINGER', ALL, 'Nothing on record for the gear. On record: Ross Robinson ran it live, kept the accidents, 60-70% '
+      'first takes, Davis never alone in the room. By ear: tight and close, a hard 8:1 that catches whispers and screams alike. Gate on. '
+      'A guess.',
+      gate=-50.0, track=VOX, **eq(120, (250, -1.0), (2500, 2.0, 1.0), (8000, 0.0)), **tube(12.0, 0.35), **comp(-28, 8.0, 1, 80, 8.0)),
+    P('CISNEROS CHANT', 'SINGER', ALL, 'Nothing on record for the chain (Sleep: Billy Anderson; Om: Albini). Cisneros: the vocals "play '
+      'riffs", tied to breathing. By ear: a steady low drone-chant, dark, sitting under the bass, a dark cave. A guess.',
+      track=VOX, fx=vfx(rev=0.3, size=0.85, damp=0.75), **eq(80, (150, 1.5), (2000, -1.0, 0.8), (6000, -4.0)), **tube(6.0, 0.25),
+      **comp(-26, 4.0, 15, 300, 5.0)),
+    P('MATT PIKE', 'SINGER', ALL, 'Nothing on record for his chain; on Snakes for the Divine he wanted the vocals "out front". By ear: '
+      'a bellowed shout, 1.8 kHz push, tube grit, hard 8:1, a small room. Gate on. A guess.',
+      gate=-46.0, track=VOX, fx=vfx(rev=0.12, size=0.45, damp=0.5), **eq(140, (250, -2.0), (1800, 3.0, 0.9), (8000, -2.0)),
+      **tube(16.0, 0.40), **comp(-26, 8.0, 2, 80, 7.0)),
+    P('MORRISOUND GROWL', 'SINGER', ALL, 'Nothing on record for the growl chain at Morrisound (Scott Burns). On record: Cannibal Corpse and '
+      'Deicide liner notes say no harmonizer, and Burns felt the vocals were "heavy on their own". So: dry, no FX. By ear: low end '
+      'kept, 700 Hz box cut, tube, 8:1. Gate on.',
+      gate=-46.0, track=VOX, **eq(80, (150, 2.0), (700, -3.0, 1.0), (6000, -2.0)), **tube(14.0, 0.40), **comp(-28, 8.0, 2, 80, 7.0)),
+    P('HALFORD', 'SINGER', ALL, 'Nothing on record for the British Steel vocal chain; Tom Allom called the room "small and dead". The '
+      'Priest trick (Allom via Andy Sneap) is a minor-third harmony sung an octave below: sing it as a second take, the box can\'t make '
+      'it. By ear: bright, 6:1 for the screams, dry. A guess.',
+      track=VOX, fx=vfx(rev=0.08, size=0.3, damp=0.6), **eq(150, (250, -2.0), (3000, 2.0, 1.0), (10000, 2.0)), **tube(6.0, 0.25),
+      **comp(-24, 6.0, 3, 100, 6.0)),
+    P('DICKINSON', 'SINGER', ALL, 'Nothing on record for the gear on Number of the Beast / Piece of Mind (Martin Birch coached the '
+      'performance: "just encouragement"). By ear: an operatic air-raid siren, upper mids, 5:1, an echo and a hall. A guess.',
+      track=VOX, fx=vfx(300, 0.2, 0.15, 4000, rev=0.22, size=0.75, damp=0.4), **eq(120, (250, -1.5), (2500, 2.0, 1.0), (10000, 2.0)),
+      **tube(6.0, 0.25), **comp(-24, 5.0, 3, 120, 6.0)),
     # ---------------- GUITAR, amp off ----------------
     P('REAMP DI', 'GUITAR', ('hpf',), 'Record the raw guitar to re-amp later: only a 30 Hz rumble cut, nothing else.',
       track=('Guitar DI', 'guitar'), **eq(30, (200, 0.0), (2500, 0.0, 1.0), (8000, 0.0))),
