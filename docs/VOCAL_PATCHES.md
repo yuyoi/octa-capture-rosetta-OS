@@ -18,7 +18,7 @@ So the EQ in each patch mostly turns the e935 into the record's mic: an M49's fu
 - **A moving flanger or chorus:** a fixed comb stands in.
 - **A Leslie:** no stand-in, so Planet Caravan and Black Hole Sun are not included.
 
-Researched 2026-11-12 and 2026-11-16. Several pages were paywalled or blocked; where a fact came only from a search excerpt, it says so.
+Researched 2026-11-12, 2026-11-16 and 2026-11-17. Several pages were paywalled or blocked; where a fact came only from a search excerpt, it says so.
 
 | Patch | On record | Sources |
 |---|---|---|
@@ -32,8 +32,6 @@ Researched 2026-11-12 and 2026-11-16. Several pages were paywalled or blocked; w
 | WIZARD OBORN | Space Echo, Copicat and a Neve pre in the band's kit (2017); Dopethrone vocals "heavily manipulated and low in the mix"; the fuzz-pedal story is fan talk | [Psychedelic Baby](https://www.psychedelicbabymag.com/2017/11/electric-wizard-interview-with-jus.html), [Musique Machine](https://www.musiquemachine.com/reviews/reviews_template.php?id=845) |
 | STALEY DIRT | Dave Jerden: M49 > API > Summit compressor, no EQ, all vocals tripled, an H3000 "Layne Staley" delay; reverb darkens, delays keep it "hard" | [Gearspace Q&A](https://gearspace.com/board/q-a-with-dave-jerden/1030250-dirt-alice-chains.html) (blocked to the fetcher, quotes via search excerpt) |
 | CORNELL | Superunknown: U47 for soft parts, U87 for full power, sung very close and very loud (secondhand) | [Produce Like A Pro](https://producelikeapro.com/blog/capturing-fire-michael-beinhorn-on-recording-chris-cornell/), [Tape Op (Terry Date)](https://tapeop.com/interviews/123/terry-date) |
-| HETFIELD PUPPETS | Rasmussen: "a Shure SM7B, through the Trident desk and UREI compressor, to tape", double-tracked, "no reverb!" | [Mix](https://www.mixonline.com/recording/classic-track-master-of-puppets-metallica) |
-| HETFIELD BLACK | Bob Rock: a Neumann FET mic, a single undoubled vocal | [Mix](https://www.mixonline.com/recording/classic-tracks-metallicas-enter-sandman-366232), [MusicRadar](https://musicradar.com/news/bob-rock-metallica-black-album-interview) |
 | ANSELMO | Sterling Winfield: an SM58 in the control room "with Yamaha NS-10s on 11 and him just screaming" | [URM ep. 48](https://urm.academy/ep48-sterling-winfield/) |
 | STEELE | Heavy compression (via search excerpt); "flanged-out vocals" on Bloody Kisses | [Revolver](https://www.revolvermag.com/music/type-o-negatives-bloody-kisses-definitive-oral-history) |
 | MUSTAINE | Nothing on record: by ear only | [Rust in Peace](https://en.wikipedia.org/wiki/Rust_in_Peace) |
@@ -51,6 +49,11 @@ Researched 2026-11-12 and 2026-11-16. Several pages were paywalled or blocked; w
 | IAN CURTIS | Mostly secondhand: "down a telephone line" on Insight, AMS DMX 15-80 on She's Lost Control; times not on record | [Vintage King](https://vintageking.com/blog/joy-divisions-unknown-pleasures/), [Unknown Pleasures](https://en.wikipedia.org/wiki/Unknown_Pleasures) |
 | CHINO | Terry Date's general habit: a 58 through two 1176s; on Ohms (2020) a RAT and an Echorec-style slap (search excerpt). White Pony's chain not on record | [Everything Recording](https://everythingrecording.com/of-metal-and-immortality/), [The Ringer](https://www.theringer.com/2020/06/17/music/oral-history-deftones-white-pony-20th-anniversary) |
 | HOMME LULLABIES | Joe Barresi on Lullabies to Paralyze: "The 1176 is my favourite on vocals", 2-3 mics with one slightly overdriven, dry leads. Rated R / Songs for the Deaf: nothing found | [Sound On Sound](https://www.soundonsound.com/techniques/recording-queens-stone-age) |
+| HOMME VILLAINS | Mark Rankin: a clean Sanken CU-51 plus an RCA 44 ribbon "for a bit of character"; Eventide 910/949 Harmonizer in the chain; "a little bit of delay and a little bit of pitch" as a fake room; the room at United recorded (via Equipboard, quoting AudioTechnology, which was blocked) | [Equipboard](https://equipboard.com/albums/queens-of-the-stone-age-villains) |
+| HOMME HARSH EV | Rankin: "sometimes an old dynamic like an Electro-Voice", "purposely trying to get a harder, harsh sound" (same source) | [Equipboard](https://equipboard.com/albums/queens-of-the-stone-age-villains) |
+| HOMME WHISPER | Barresi: on This Lullaby, whispery background vocals "through a mic with an analogue guitar pedal reverb on it" | [Sound On Sound](https://www.soundonsound.com/techniques/recording-queens-stone-age) |
+| HOMME AMP VOCAL | Barresi: vocals "sung through an amplifier or a Leslie cabinet"; on Like a Drug, "Josh singing into an amplifier, and every mic in the room wide open" | [Sound On Sound](https://www.soundonsound.com/techniques/recording-queens-stone-age) |
+| HOMME FALSETTO | Nothing found: ...Like Clockwork was recorded by Mark Rankin at Pink Duck, but no vocal chain is published. By ear | [...Like Clockwork](https://en.wikipedia.org/wiki/...Like_Clockwork) |
 | WEILAND PICKUP | Dean DeLeo: Scott sang the Dead & Bloated intro into the bridge pickup of Dean's Les Paul | [Dead & Bloated](https://en.wikipedia.org/wiki/Dead_%26_Bloated) |
 | WEILAND CORE | Brendan O'Brien: STP vocals got "more echo, more trippy, more psychedelic"; his usual chain is a Neve + LA-2A or Tube-Tech (video transcript) | [Rick Beato interview transcript](https://rosetta.to/u/rickbeato/brendan-o-brien-interview-the-unsung-hero-of-rock-music) |
 | LEMMY | Nothing on record for the chain; Vic Maile "got me singing instead of just shouting" | [Ace of Spades](https://en.wikipedia.org/wiki/Ace_of_Spades_(Mot%C3%B6rhead_album)) |

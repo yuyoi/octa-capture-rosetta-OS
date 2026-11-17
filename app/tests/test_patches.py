@@ -162,10 +162,10 @@ app.processEvents()
 pb.grab().save(os.path.join(out, 'patch_browser.png'))
 # singer patches carry the box's echo + reverb: one input per box
 L.calls.clear()
-tap('HETFIELD PUPPETS')
+tap('HOMME VILLAINS')
 fxc = [x for x in L.calls if x[0] == 'fx']
-check('HETFIELD PUPPETS: 25 ms double sent, no reverb', fxc and fxc[-1][1] == w.strip.ch and fxc[-1][2]['echo_ms'] == 25.0
-      and fxc[-1][2]['rev_mix'] == 0.0, fxc)
+check('HOMME VILLAINS: 30 ms fake-room delay + small room sent', fxc and fxc[-1][1] == w.strip.ch and fxc[-1][2]['echo_ms'] == 30.0
+      and fxc[-1][2]['rev_mix'] == 0.18, fxc)
 check('FX key lit on the strip', w.strip.blk['fx'].checked and c['on']['fx'])
 other = (w.strip.ch + 1) % 8
 w.units[1]['chans'][other]['on'].update(dict.fromkeys(w.units[1]['chans'][other]['on'], False))

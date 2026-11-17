@@ -247,14 +247,6 @@ FACTORY = [
     P('CORNELL', 'SINGER', ALL, 'On record (Superunknown): U47 soft, U87 full power, sung very close and very loud. Here: '
       'condenser air on the e935, close-up boom held, fast hard 10:1 to catch the huge range, dry.',
       track=VOX, **eq(100, (200, -2.0), (3000, 1.0, 1.0), (10000, 2.0)), **tube(3.0, 0.15), **comp(-24, 10.0, 0.5, 80, 6.0)),
-    P('HETFIELD PUPPETS', 'SINGER', ALL, 'On record (Flemming Rasmussen): SM7B > Trident desk > UREI comp to tape, double-tracked, '
-      '"no reverb!". Here: the e935 darkened toward an SM7B, 1176-style 6:1, a 25 ms double, zero reverb. Gate on.',
-      gate=-48.0, track=VOX, fx=vfx(25, 0.0, 0.5, 6000), **eq(110, (220, 1.0), (4500, -1.5, 1.0), (7000, -3.0)),
-      **tube(4.0, 0.20), **comp(-24, 6.0, 1, 100, 6.0)),
-    P('HETFIELD BLACK', 'SINGER', ALL, 'On record (Bob Rock): a Neumann FET condenser, ONE vocal, no double ("I\'ll get you a great '
-      'vocal sound"), more space. Here: condenser top, 4:1, a single voice in a medium room.',
-      gate=-50.0, track=VOX, fx=vfx(rev=0.2, size=0.6, damp=0.45), **eq(100, (200, -1.0), (3000, 1.5, 1.0), (10000, 2.5)),
-      **tube(4.0, 0.20), **comp(-22, 4.0, 3, 120, 5.0)),
     P('ANSELMO', 'SINGER', ALL, 'On record (Sterling Winfield): an SM58 in the control room with the NS-10s on 11, screaming. '
       'Here: 58-style top, 2.5 kHz grit, tube bite, hard 8:1, a short slap. Gate on.',
       gate=-46.0, track=VOX, fx=vfx(95, 0.05, 0.15, 3500), **eq(150, (250, -2.0), (2500, 2.5, 1.0), (9000, -2.0)),
@@ -336,6 +328,32 @@ FACTORY = [
       '1176 is my favourite on vocals", compressed going to tape, often 2-3 mics with one slightly overdriven, dry lead vocals. Here: '
       'fast 1176-style 4:1, tube drive standing in for the dirty second mic, dry.',
       track=VOX, **eq(100, (200, 0.0), (2000, 1.5, 1.0), (9000, 1.5)), **tube(12.0, 0.30), **comp(-26, 4.0, 1, 100, 6.0)),
+    P('HOMME VILLAINS', 'SINGER', ALL, 'On record (Mark Rankin, Villains 2017): a clean Sanken CU-51 condenser plus an RCA 44 ribbon '
+      '"for a bit of character", an Eventide 910/949 Harmonizer in the chain, "a little bit of delay and a little bit of pitch" '
+      'for a fake room, and the live room at United. Here: condenser top with ribbon warmth, a 30 ms delay as the fake room, a '
+      'small room. The box has no pitch shifter, so no Harmonizer detune.',
+      gate=-50.0, track=VOX, fx=vfx(30, 0.15, 0.35, 5000, rev=0.18, size=0.45, damp=0.5),
+      **eq(90, (180, 1.5), (3000, 1.0, 1.0), (10000, 2.0)), **tube(4.0, 0.15), **comp(-24, 4.0, 3, 120, 5.0)),
+    P('HOMME HARSH EV', 'SINGER', ALL, 'On record (Rankin, Villains): "sometimes an old dynamic like an Electro-Voice", "purposely '
+      'trying to get a harder, harsh sound". Here: the e935 is a dynamic already: lows thinned, a hard 2.5 kHz bite, air rolled '
+      'off, tube grit, fast 6:1, dry.',
+      gate=-48.0, track=VOX, **eq(150, (250, -3.0), (2500, 4.0, 1.2), (9000, -3.0)), **tube(10.0, 0.25),
+      **comp(-26, 6.0, 1, 90, 7.0)),
+    P('HOMME WHISPER', 'SINGER', ALL, 'On record (Joe Barresi, Lullabies to Paralyze): on This Lullaby, Josh\'s whispery background '
+      'vocals went "through a mic with an analogue guitar pedal reverb on it". Here: lows off, breath and air up, a gentle 3:1 so '
+      'the whisper sits forward, a big dark reverb. No gate: a gate chops whispers.',
+      track=VOX, fx=vfx(rev=0.45, size=0.75, damp=0.65), **eq(160, (250, -4.0), (5000, 2.0, 0.9), (10000, 3.0)),
+      **tube(2.0, 0.10), **comp(-34, 3.0, 5, 150, 8.0)),
+    P('HOMME AMP VOCAL', 'SINGER', ALL, 'On record (Barresi, Lullabies): vocals "sung through an amplifier or a Leslie cabinet"; on '
+      'Like a Drug Josh sang into an amp "with every mic in the room wide open". Here: a small amp speaker (300 Hz to 4 kHz, honky '
+      '1.2 kHz), the tube flat out, squashed, the room as the reverb. No Leslie: the box has no rotary.',
+      gate=-48.0, track=VOX, fx=vfx(rev=0.35, size=0.6, damp=0.6), **eq(300, (400, -2.0), (1200, 5.0, 1.0), (4000, -9.0)),
+      **tube(20.0, 0.35), **comp(-28, 8.0, 2, 120, 6.0)),
+    P('HOMME FALSETTO', 'SINGER', ALL, 'Nothing on record for the ...Like Clockwork vocal chain (Mark Rankin recorded it at Pink '
+      'Duck; no vocal details published). By ear: lows thinned so the falsetto floats, a soft presence lift and air, a smooth 3:1, '
+      'a short slap and a medium room. A guess, not a recipe.',
+      gate=-52.0, track=VOX, fx=vfx(90, 0.1, 0.2, 4500, rev=0.25, size=0.6, damp=0.5),
+      **eq(120, (220, -2.0), (3500, 1.5, 0.9), (11000, 2.5)), **tube(3.0, 0.10), **comp(-26, 3.0, 5, 160, 5.0)),
     P('WEILAND PICKUP', 'SINGER', ('hpf', 'peak', 'high', 'tube', 'comp'), 'On record (Dean DeLeo): for the Dead & Bloated intro Scott '
       'sang into the bridge pickup of Dean\'s Les Paul. How it sounded through the desk is not on record: here a narrow, honky, driven '
       'band like a pickup used as a mic.',
